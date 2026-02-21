@@ -1,5 +1,5 @@
 
-# Fix the escape sequence issue and rewrite the file
+# Update the file reading section to handle different Excel formats and engines
 
 app_code = r'''
 import streamlit as st
@@ -34,6 +34,22 @@ TERMINAL_BANK_MAP = {
     "63934024": "Bank Al Bilad", "63934025": "Bank Al Bilad", "64729693": "Bank Al Bilad",
     "64729694": "Bank Al Bilad", "64729695": "Bank Al Bilad", "64729696": "Bank Al Bilad"
 }
+
+def read_excel_file(uploaded_file):
+    """Read Excel file with multiple engine attempts"""
+    try:
+        # Try openpyxl first (for .xlsx)
+        return pd.read_excel(uploaded_file, engine='openpyxl')
+    except Exception as e1:
+        try:
+            # Try xlrd for older .xls files
+            return pd.read_excel(uploaded_file, engine='xlrd')
+        except Exception as e2:
+            try:
+                # Try without specifying engine
+                return pd.read_excel(uploaded_file)
+            except Exception as e3:
+                raise Exception(f"Could not read Excel file. Tried openpyxl, xlrd, and default engine. Errors: {e1}; {e2}; {e3}")
 
 def detect_file_type(df):
     """Detect if file is Geidea or Foodics format"""
@@ -879,7 +895,8 @@ uploaded_file = st.file_uploader("📁 Upload Excel file (Geidea or Foodics)", t
 
 if uploaded_file:
     try:
-        df_raw = pd.read_excel(uploaded_file)
+        # Use the new read function with multiple engine attempts
+        df_raw = read_excel_file(uploaded_file)
         file_type = detect_file_type(df_raw)
         
         if file_type == "geidea":
@@ -1076,23 +1093,20 @@ if uploaded_file:
         st.info("Please check your file format and try again.")
 
 st.markdown("---")
-st.caption("Geidea & Foodics Summary Generator v5.0 | Multi-Platform Support")
+st.caption("Geidea & Foodics Summary Generator v5.1 | Multi-Platform Support with Enhanced File Reading")
 '''
 
 with open('app.py', 'w') as f:
     f.write(app_code)
 
-print("✅ Successfully updated app.py with Foodics support!")
-print("\n🆕 Foodics Features:")
-print("   • Auto-detects Foodics format (Payment Method + Branch columns)")
-print("   • 3 Foodics reports:")
-print("     1. Summary by Branch - grouped by branch with payment methods and subtotals")
-print("     2. Summary by Payment Method - consolidated across all branches")
-print("     3. Daily Averages - avg per day by payment method (if date range found)")
-print("   • Parses date range from Foodics header to calculate daily averages")
-print("   • Green color theme for Foodics (2E7D32) vs Blue for Geidea (366092)")
-print("   • All buttons prefixed with 'Foodics:' with descriptions")
-print("\n📋 Foodics Reports:")
-print("   • Foodics_01_SUMMARY_by_Branch_{n}_branches.xlsx")
-print("   • Foodics_02_SUMMARY_by_Payment_Method.xlsx")
-print("   • Foodics_03_Daily_Averages_{n}_days.xlsx (if date range detected)")
+print("✅ Fixed file reading issue!")
+print("\n🔧 Changes made:")
+print("   • Added read_excel_file() function with multiple engine attempts")
+print("   • Tries openpyxl first (for .xlsx files)")
+print("   • Falls back to xlrd (for older .xls files)")
+print("   • Finally tries default engine as last resort")
+print("   • Provides detailed error messages if all engines fail")
+print("\n📋 Supported formats:")
+print("   • .xlsx (Excel 2007+, uses openpyxl)")
+print("   • .xls (Excel 97-2003, uses xlrd)")
+print("   • Any Excel format pandas can detect")

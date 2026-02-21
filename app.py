@@ -234,9 +234,16 @@ def create_detailed_file(df):
             credit = row_data[f"{term}_Credit"]
             total = row_data[f"{term}_Total"]
             
-            ws.cell(row=r_idx, column=col_idx, value=debit if debit != 0 else "")
-            ws.cell(row=r_idx, column=col_idx+1, value=credit if credit != 0 else "")
-            ws.cell(row=r_idx, column=col_idx+2, value=total if total != 0 else "")
+            # Always show 0 instead of empty string
+            ws.cell(row=r_idx, column=col_idx, value=debit)
+            ws.cell(row=r_idx, column=col_idx+1, value=credit)
+            ws.cell(row=r_idx, column=col_idx+2, value=total)
+            
+            # Format numbers
+            ws.cell(row=r_idx, column=col_idx).number_format = "#,##0.00"
+            ws.cell(row=r_idx, column=col_idx+1).number_format = "#,##0.00"
+            ws.cell(row=r_idx, column=col_idx+2).number_format = "#,##0.00"
+            
             col_idx += 3
     
     ws.column_dimensions["A"].width = 18
@@ -406,9 +413,16 @@ def create_detailed_by_date_file(df):
                 credit = row_data[f"{date}_{term}_Credit"]
                 total = row_data[f"{date}_{term}_Total"]
                 
-                ws.cell(row=r_idx, column=col_idx, value=debit if debit != 0 else "")
-                ws.cell(row=r_idx, column=col_idx+1, value=credit if credit != 0 else "")
-                ws.cell(row=r_idx, column=col_idx+2, value=total if total != 0 else "")
+                # Always show 0 instead of empty string
+                ws.cell(row=r_idx, column=col_idx, value=debit)
+                ws.cell(row=r_idx, column=col_idx+1, value=credit)
+                ws.cell(row=r_idx, column=col_idx+2, value=total)
+                
+                # Format numbers
+                ws.cell(row=r_idx, column=col_idx).number_format = "#,##0.00"
+                ws.cell(row=r_idx, column=col_idx+1).number_format = "#,##0.00"
+                ws.cell(row=r_idx, column=col_idx+2).number_format = "#,##0.00"
+                
                 col_idx += 3
     
     # Set column widths
@@ -539,18 +553,15 @@ if uploaded_file:
         st.info("Please check your file has columns: Terminal, Card Name, Ter. Total Debit, Ter. Total Credit")
 
 st.markdown("---")
-st.caption("Terminal Summary Generator v3.0 | Now with Multi-Date Support")
+st.caption("Terminal Summary Generator v3.1 | Zeros for empty cells")
 '''
 
 with open('app.py', 'w') as f:
     f.write(app_code)
 
-print("✅ Updated app.py with multi-date support!")
-print("\n🆕 New Features:")
-print("   • Automatically detects 'Reconciliation Date' column")
-print("   • Creates 'DETAILED_by_Date' sheet when multiple dates found")
-print("   • Groups columns by date: Friday/02/Jan/2026 → Terminal columns")
-print("   • Each date section shows Debit/Credit/Total for all terminals")
-print("\n📋 Expected input columns:")
-print("   - Terminal, Card Name, Ter. Total Debit, Ter. Total Credit")
-print("   - Reconciliation Date (optional, auto-detected)")
+print("✅ Updated app.py - now showing zeros for empty cells!")
+print("\n🔄 Changes made:")
+print("   • Removed conditional that showed empty strings for zero values")
+print("   • All cells now display 0.00 instead of blank")
+print("   • Added number formatting (#,##0.00) to all numeric cells")
+print("   • Applied to both Detailed and Detailed_by_Date files")

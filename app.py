@@ -1,21 +1,12 @@
-# Create requirements.txt
-requirements = """streamlit>=1.28.0
-pandas>=2.0.0
-openpyxl>=3.1.0
-"""
-
-with open('requirements.txt', 'w') as f:
-    f.write(requirements)
-
-# Create the fixed app.py
+# Save this as app.py
 app_code = '''
 import streamlit as st
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.utils import get_column_letter
 import io
 
-# Page config
 st.set_page_config(page_title="Terminal Summary Generator", layout="wide")
 
 # Terminal to Bank mapping
@@ -43,39 +34,35 @@ TERMINAL_BANK_MAP = {
 
 def process_data(df):
     """Process uploaded data"""
-    # Clean terminal column
     df["Terminal"] = df["Terminal"].astype(str).str.strip().str.replace(".0", "", regex=False)
-    
-    # Add Bank Name
     df["Bank Name"] = df["Terminal"].map(TERMINAL_BANK_MAP).fillna("Unknown Bank")
-    
-    # Calculate Total
     df["Total"] = df["Ter. Total Debit"].fillna(0) + df["Ter. Total Credit"].fillna(0)
     
-    # Aggregate by Bank + Card
+    # For detailed view
+    df["Total Debit"] = df["Ter. Total Debit"]
+    df["Total Credit"] = df["Ter. Total Credit"]
+    df["Total Debit Credit"] = df["Ter.Total Debit Credit"]
+    
+    return df
+
+def create_summary_file(df):
+    """Create simple summary by Bank + Card (Totals only)"""
     summary = df.groupby(["Bank Name", "Card Name"]).agg({
         "Total": "sum"
     }).reset_index()
     
-    # Sort
     summary["Sort"] = summary["Bank Name"].apply(lambda x: 1 if x == "Unknown Bank" else 0)
     summary = summary.sort_values(["Sort", "Bank Name", "Card Name"]).drop("Sort", axis=1)
     
-    return summary, df["Bank Name"].unique()
-
-def create_excel(summary):
-    """Create formatted Excel"""
     wb = Workbook()
     ws = wb.active
     ws.title = "Summary"
     
-    # Styles
     header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
     header_font = Font(color="FFFFFF", bold=True, size=12)
     unknown_fill = PatternFill(start_color="FF6B6B", end_color="FF6B6B", fill_type="solid")
     total_fill = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
     
-    # Headers
     headers = ["Bank Name", "Card Scheme", "Total"]
     for col, header in enumerate(headers, 1):
         cell = ws.cell(row=1, column=col, value=header)
@@ -83,7 +70,6 @@ def create_excel(summary):
         cell.font = header_font
         cell.alignment = Alignment(horizontal="center", vertical="center")
     
-    # Data
     row_idx = 2
     for _, data in summary.iterrows():
         ws.cell(row=row_idx, column=1, value=data["Bank Name"])
@@ -98,7 +84,6 @@ def create_excel(summary):
                 ws.cell(row=row_idx, column=col).font = Font(bold=True, color="FFFFFF")
         row_idx += 1
     
-    # Grand Total
     grand_total = summary["Total"].sum()
     row_idx += 1
     ws.cell(row=row_idx, column=1, value="GRAND TOTAL")
@@ -109,97 +94,238 @@ def create_excel(summary):
         ws.cell(row=row_idx, column=col).fill = total_fill
         ws.cell(row=row_idx, column=col).font = Font(bold=True, size=12)
     
-    # Widths
     ws.column_dimensions["A"].width = 20
     ws.column_dimensions["B"].width = 18
     ws.column_dimensions["C"].width = 15
     
-    # Save to buffer
     buffer = io.BytesIO()
     wb.save(buffer)
     buffer.seek(0)
-    return buffer, grand_total
+    return buffer, summary, grand_total
+
+def create_detailed_file(df):
+    """Create detailed file with all terminals as columns"""
+    summary = df.groupby(["Terminal", "Bank Name", "Card Name"]).agg({
+        "Total Debit": "sum",
+        "Total Credit": "sum",
+        "Total Debit Credit": "sum"
+    }).reset_index()
+    
+    terminals = sorted(summary["Terminal"].unique())
+    banks = sorted(summary["Bank Name"].unique(), key=lambda x: (x == "Unknown Bank", x))
+    card_schemes = sorted(summary["Card Name"].unique())
+    
+    rows = []
+    for bank in banks:
+        for card in card_schemes:
+            bank_card_data = summary[(summary["Bank Name"] == bank) & (summary["Card Name"] == card)]
+            if len(bank_card_data) == 0:
+                continue
+            
+            row = {"Bank Name": bank, "Card Scheme": card}
+            for term in terminals:
+                term_data = bank_card_data[bank_card_data["Terminal"] == term]
+                if len(term_data) > 0:
+                    row[f"{term}_Debit"] = term_data["Total Debit"].values[0]
+                    row[f"{term}_Credit"] = term_data["Total Credit"].values[0]
+                    row[f"{term}_Total"] = term_data["Total Debit Credit"].values[0]
+                else:
+                    row[f"{term}_Debit"] = 0
+                    row[f"{term}_Credit"] = 0
+                    row[f"{term}_Total"] = 0
+            rows.append(row)
+    
+    # TOTAL row
+    total_row = {"Bank Name": "TOTAL", "Card Scheme": "ALL"}
+    for term in terminals:
+        term_data = summary[summary["Terminal"] == term]
+        total_row[f"{term}_Debit"] = term_data["Total Debit"].sum()
+        total_row[f"{term}_Credit"] = term_data["Total Credit"].sum()
+        total_row[f"{term}_Total"] = term_data["Total Debit Credit"].sum()
+    rows.append(total_row)
+    
+    # AVG row
+    avg_row = {"Bank Name": "AVG", "Card Scheme": "ALL"}
+    for term in terminals:
+        term_data = summary[summary["Terminal"] == term]
+        avg_row[f"{term}_Debit"] = round(term_data["Total Debit"].mean(), 2)
+        avg_row[f"{term}_Credit"] = round(term_data["Total Credit"].mean(), 2)
+        avg_row[f"{term}_Total"] = round(term_data["Total Debit Credit"].mean(), 2)
+    rows.append(avg_row)
+    
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Detailed"
+    
+    header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True, size=9)
+    sub_header_fill = PatternFill(start_color="B8CCE4", end_color="B8CCE4", fill_type="solid")
+    sub_header_font = Font(bold=True, size=8)
+    unknown_fill = PatternFill(start_color="FF6B6B", end_color="FF6B6B", fill_type="solid")
+    center_align = Alignment(horizontal="center", vertical="center")
+    
+    ws.cell(row=1, column=1, value="Bank Name")
+    ws.cell(row=1, column=1).fill = header_fill
+    ws.cell(row=1, column=1).font = header_font
+    ws.cell(row=1, column=1).alignment = center_align
+    
+    ws.cell(row=1, column=2, value="Card Scheme")
+    ws.cell(row=1, column=2).fill = header_fill
+    ws.cell(row=1, column=2).font = header_font
+    ws.cell(row=1, column=2).alignment = center_align
+    
+    col_idx = 3
+    for term in terminals:
+        ws.cell(row=1, column=col_idx, value=f"#{term}")
+        ws.cell(row=1, column=col_idx).fill = header_fill
+        ws.cell(row=1, column=col_idx).font = header_font
+        ws.cell(row=1, column=col_idx).alignment = center_align
+        ws.merge_cells(start_row=1, start_column=col_idx, end_row=1, end_column=col_idx+2)
+        
+        ws.cell(row=2, column=col_idx, value="Debit").fill = sub_header_fill
+        ws.cell(row=2, column=col_idx).font = sub_header_font
+        ws.cell(row=2, column=col_idx).alignment = center_align
+        
+        ws.cell(row=2, column=col_idx+1, value="Credit").fill = sub_header_fill
+        ws.cell(row=2, column=col_idx+1).font = sub_header_font
+        ws.cell(row=2, column=col_idx+1).alignment = center_align
+        
+        ws.cell(row=2, column=col_idx+2, value="Total").fill = sub_header_fill
+        ws.cell(row=2, column=col_idx+2).font = sub_header_font
+        ws.cell(row=2, column=col_idx+2).alignment = center_align
+        
+        col_idx += 3
+    
+    for r_idx, row_data in enumerate(rows, 3):
+        bank_val = row_data["Bank Name"]
+        card_val = row_data["Card Scheme"]
+        
+        cell = ws.cell(row=r_idx, column=1, value=bank_val)
+        if bank_val == "Unknown Bank":
+            cell.fill = unknown_fill
+            cell.font = Font(bold=True, color="FFFFFF")
+        elif bank_val in ["TOTAL", "AVG"]:
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="E0E0E0", fill_type="solid")
+        
+        cell = ws.cell(row=r_idx, column=2, value=card_val)
+        if bank_val == "Unknown Bank":
+            cell.fill = unknown_fill
+            cell.font = Font(bold=True, color="FFFFFF")
+        elif bank_val in ["TOTAL", "AVG"]:
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="E0E0E0", fill_type="solid")
+        
+        col_idx = 3
+        for term in terminals:
+            debit = row_data[f"{term}_Debit"]
+            credit = row_data[f"{term}_Credit"]
+            total = row_data[f"{term}_Total"]
+            
+            ws.cell(row=r_idx, column=col_idx, value=debit if debit != 0 else "")
+            ws.cell(row=r_idx, column=col_idx+1, value=credit if credit != 0 else "")
+            ws.cell(row=r_idx, column=col_idx+2, value=total if total != 0 else "")
+            col_idx += 3
+    
+    ws.column_dimensions["A"].width = 18
+    ws.column_dimensions["B"].width = 15
+    for i in range(3, col_idx):
+        ws.column_dimensions[get_column_letter(i)].width = 11
+    
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return buffer, len(terminals)
 
 # UI
 st.title("🏦 Terminal Summary Generator")
-st.markdown("Upload your terminal reconciliation Excel file to generate summary by Bank and Card Scheme")
+st.markdown("Upload your terminal reconciliation file. Get **TWO** output files:")
 
-with st.expander("📋 View Terminal Mapping"):
-    st.write("**Mapped Terminals:**")
-    sample = dict(list(TERMINAL_BANK_MAP.items())[:5])
-    for k, v in sample.items():
-        st.text(f"{k} → {v}")
-    st.caption(f"... and {len(TERMINAL_BANK_MAP)-5} more terminals all mapped to Bank Al Bilad")
+col1, col2 = st.columns(2)
+with col1:
+    st.info("📊 **Summary File**\\nBank + Card Scheme totals only")
+with col2:
+    st.info("📋 **Detailed File**\\nAll terminals as columns with Debit/Credit/Total")
 
-# File upload
 uploaded_file = st.file_uploader("📁 Upload Excel file", type=["xlsx", "xls"])
 
 if uploaded_file:
     try:
         df = pd.read_excel(uploaded_file)
-        st.success(f"✅ Loaded {len(df)} rows")
+        st.success(f"✅ Loaded {len(df)} rows from {uploaded_file.name}")
         
-        # Show preview
         with st.expander("🔍 Preview Raw Data"):
-            st.dataframe(df.head(20), use_container_width=True)
+            st.dataframe(df.head(10), use_container_width=True)
         
-        # Process
-        with st.spinner("Processing..."):
-            summary, banks = process_data(df)
+        with st.spinner("Processing both files..."):
+            df_processed = process_data(df)
+            summary_buffer, summary_df, grand_total = create_summary_file(df_processed)
+            detailed_buffer, num_terminals = create_detailed_file(df_processed)
         
-        # Show results
-        st.subheader("📊 Summary Results")
-        
+        st.subheader("📊 Summary Preview")
         col1, col2, col3 = st.columns(3)
-        col1.metric("Total Banks", len(banks))
-        col2.metric("Card Schemes", summary["Card Name"].nunique())
-        col3.metric("Total Rows", len(summary))
+        col1.metric("Banks", summary_df["Bank Name"].nunique())
+        col2.metric("Card Schemes", summary_df["Card Name"].nunique())
+        col3.metric("Grand Total", f"{grand_total:,.0f}")
         
-        # Unknown warning
-        if "Unknown Bank" in banks:
-            unknown_count = len(summary[summary["Bank Name"] == "Unknown Bank"])
-            st.warning(f"⚠️ {unknown_count} rows with Unknown Bank (terminals not in mapping)")
-        
-        # Display table
-        def color_unknown(row):
-            if row["Bank Name"] == "Unknown Bank":
-                return ["background-color: #FF6B6B; color: white"] * len(row)
-            return [""] * len(row)
+        if "Unknown Bank" in summary_df["Bank Name"].values:
+            st.warning("⚠️ Some terminals not found in mapping (shown in red)")
         
         st.dataframe(
-            summary.style.format({"Total": "{:,.2f}"}).apply(color_unknown, axis=1),
+            summary_df.style.format({"Total": "{:,.2f}"})
+            .apply(lambda x: ["background-color: #FF6B6B; color: white"]*3 if x["Bank Name"]=="Unknown Bank" else [""]*3, axis=1),
             use_container_width=True,
-            height=400
+            height=300
         )
         
-        # Download
-        excel_buffer, grand_total = create_excel(summary)
+        st.subheader("⬇️ Download Both Files")
         
-        st.subheader(f"💰 Grand Total: {grand_total:,.2f}")
+        col1, col2 = st.columns(2)
         
-        st.download_button(
-            label="📥 Download Excel Summary",
-            data=excel_buffer,
-            file_name="terminal_summary.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
+        with col1:
+            st.download_button(
+                label="📊 Download Summary",
+                data=summary_buffer,
+                file_name="01_SUMMARY_Totals_Only.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        
+        with col2:
+            st.download_button(
+                label="📋 Download Detailed",
+                data=detailed_buffer,
+                file_name=f"02_DETAILED_All_Terminals_{num_terminals}_columns.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        
+        st.success(f"✅ Both files ready! Detailed file has {num_terminals} terminal columns")
         
     except Exception as e:
         st.error(f"❌ Error: {str(e)}")
-        st.info("Please check your file format and try again.")
+        st.info("Please check your file has columns: Terminal, Card Name, Ter. Total Debit, Ter. Total Credit")
 
 st.markdown("---")
-st.caption("Made with Streamlit | Terminal Summary Generator v1.0")
+st.caption("Terminal Summary Generator v2.0 | Provides both Summary and Detailed views")
 '''
 
 with open('app.py', 'w') as f:
     f.write(app_code)
 
+# Create requirements.txt
+requirements = """streamlit>=1.28.0
+pandas>=2.0.0
+openpyxl>=3.1.0
+"""
+
+with open('requirements.txt', 'w') as f:
+    f.write(requirements)
+
 print("✅ Files created:")
 print("   - app.py")
 print("   - requirements.txt")
-print("\n📦 Next steps:")
-print("1. Upload both files to GitHub")
+print("\n📦 Ready for deployment to Streamlit Cloud!")
+print("\n1. Upload both files to GitHub")
 print("2. Go to https://share.streamlit.io")
-print("3. Deploy from your GitHub repo")
+print("3. Deploy from your repo")

@@ -7,7 +7,7 @@ from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 import io
 
-st.set_page_config(page_title="Terminal Summary Generator", layout="wide")
+st.set_page_config(page_title="Geidea Terminal Summary Generator", layout="wide")
 
 # Terminal to Bank mapping
 TERMINAL_BANK_MAP = {
@@ -114,6 +114,120 @@ def create_summary_file(df):
     wb.save(buffer)
     buffer.seek(0)
     return buffer, summary, grand_total
+
+def create_summary_by_date_file(df):
+    """Create summary by Date + Bank + Card"""
+    if df["Reconciliation Date"].isna().all():
+        return None, None, 0
+    
+    summary = df.groupby(["Reconciliation Date", "Bank Name", "Card Name"]).agg({
+        "Total": "sum"
+    }).reset_index()
+    
+    summary["Sort"] = summary["Bank Name"].apply(lambda x: 1 if x == "Unknown Bank" else 0)
+    summary = summary.sort_values(["Reconciliation Date", "Sort", "Bank Name", "Card Name"]).drop("Sort", axis=1)
+    
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Summary_by_Date"
+    
+    header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True, size=12)
+    date_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+    date_font = Font(color="FFFFFF", bold=True, size=11)
+    unknown_fill = PatternFill(start_color="FF6B6B", end_color="FF6B6B", fill_type="solid")
+    total_fill = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
+    subtotal_fill = PatternFill(start_color="E0E0E0", end_color="E0E0E0", fill_type="solid")
+    
+    headers = ["Date", "Bank Name", "Card Scheme", "Total"]
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=header)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    
+    row_idx = 2
+    current_date = None
+    date_totals = {}
+    
+    for _, data in summary.iterrows():
+        date_val = data["Reconciliation Date"]
+        date_str = date_val.strftime("%A/%d/%b/%Y") if hasattr(date_val, 'strftime') else str(date_val)
+        
+        # Add date header row when date changes
+        if date_val != current_date:
+            if current_date is not None:
+                # Add subtotal for previous date
+                row_idx += 1
+                ws.cell(row=row_idx, column=1, value="")
+                ws.cell(row=row_idx, column=2, value="DATE SUBTOTAL")
+                ws.cell(row=row_idx, column=3, value="")
+                ws.cell(row=row_idx, column=4, value=date_totals[current_date])
+                ws.cell(row=row_idx, column=4).number_format = "#,##0.00"
+                ws.cell(row=row_idx, column=4).font = Font(bold=True)
+                for col in range(1, 5):
+                    ws.cell(row=row_idx, column=col).fill = subtotal_fill
+                row_idx += 1
+            
+            # New date header
+            ws.cell(row=row_idx, column=1, value=date_str)
+            ws.cell(row=row_idx, column=1).fill = date_fill
+            ws.cell(row=row_idx, column=1).font = date_font
+            ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=4)
+            row_idx += 1
+            current_date = date_val
+            date_totals[current_date] = 0
+        
+        # Write data row
+        ws.cell(row=row_idx, column=1, value="")  # Empty date cell (merged above)
+        ws.cell(row=row_idx, column=2, value=data["Bank Name"])
+        ws.cell(row=row_idx, column=3, value=data["Card Name"])
+        ws.cell(row=row_idx, column=4, value=data["Total"])
+        ws.cell(row=row_idx, column=4).number_format = "#,##0.00"
+        ws.cell(row=row_idx, column=4).alignment = Alignment(horizontal="right")
+        
+        if data["Bank Name"] == "Unknown Bank":
+            for col in range(2, 5):
+                ws.cell(row=row_idx, column=col).fill = unknown_fill
+                ws.cell(row=row_idx, column=col).font = Font(bold=True, color="FFFFFF")
+        
+        date_totals[current_date] += data["Total"]
+        row_idx += 1
+    
+    # Add final date subtotal
+    if current_date is not None:
+        row_idx += 1
+        ws.cell(row=row_idx, column=1, value="")
+        ws.cell(row=row_idx, column=2, value="DATE SUBTOTAL")
+        ws.cell(row=row_idx, column=3, value="")
+        ws.cell(row=row_idx, column=4, value=date_totals[current_date])
+        ws.cell(row=row_idx, column=4).number_format = "#,##0.00"
+        ws.cell(row=row_idx, column=4).font = Font(bold=True)
+        for col in range(1, 5):
+            ws.cell(row=row_idx, column=col).fill = subtotal_fill
+        row_idx += 1
+    
+    # Grand Total
+    row_idx += 1
+    grand_total = summary["Total"].sum()
+    ws.cell(row=row_idx, column=1, value="")
+    ws.cell(row=row_idx, column=2, value="GRAND TOTAL")
+    ws.cell(row=row_idx, column=3, value="ALL DATES")
+    ws.cell(row=row_idx, column=4, value=grand_total)
+    ws.cell(row=row_idx, column=4).number_format = "#,##0.00"
+    for col in range(1, 5):
+        ws.cell(row=row_idx, column=col).fill = total_fill
+        ws.cell(row=row_idx, column=col).font = Font(bold=True, size=12)
+    
+    ws.column_dimensions["A"].width = 20
+    ws.column_dimensions["B"].width = 20
+    ws.column_dimensions["C"].width = 18
+    ws.column_dimensions["D"].width = 15
+    
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return buffer, summary, len(summary["Reconciliation Date"].unique())
 
 def create_detailed_file(df):
     """Create detailed file with all terminals as columns"""
@@ -234,12 +348,10 @@ def create_detailed_file(df):
             credit = row_data[f"{term}_Credit"]
             total = row_data[f"{term}_Total"]
             
-            # Always show 0 instead of empty string
             ws.cell(row=r_idx, column=col_idx, value=debit)
             ws.cell(row=r_idx, column=col_idx+1, value=credit)
             ws.cell(row=r_idx, column=col_idx+2, value=total)
             
-            # Format numbers
             ws.cell(row=r_idx, column=col_idx).number_format = "#,##0.00"
             ws.cell(row=r_idx, column=col_idx+1).number_format = "#,##0.00"
             ws.cell(row=r_idx, column=col_idx+2).number_format = "#,##0.00"
@@ -261,7 +373,6 @@ def create_detailed_by_date_file(df):
     if df["Reconciliation Date"].isna().all():
         return None, 0, 0
     
-    # Group by Date, Terminal, Bank, Card
     summary = df.groupby(["Reconciliation Date", "Terminal", "Bank Name", "Card Name"]).agg({
         "Total Debit": "sum",
         "Total Credit": "sum",
@@ -277,7 +388,6 @@ def create_detailed_by_date_file(df):
     ws = wb.active
     ws.title = "Detailed_by_Date"
     
-    # Styles
     date_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
     date_font = Font(color="FFFFFF", bold=True, size=11)
     header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
@@ -288,7 +398,6 @@ def create_detailed_by_date_file(df):
     total_fill = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
     center_align = Alignment(horizontal="center", vertical="center")
     
-    # Build rows structure
     rows = []
     for bank in banks:
         for card in card_schemes:
@@ -298,7 +407,6 @@ def create_detailed_by_date_file(df):
             
             row = {"Bank Name": bank, "Card Scheme": card}
             
-            # For each date, add terminal columns
             for date in dates:
                 date_data = bank_card_data[bank_card_data["Reconciliation Date"] == date]
                 for term in terminals:
@@ -335,7 +443,6 @@ def create_detailed_by_date_file(df):
             avg_row[f"{date}_{term}_Total"] = round(term_data["Total Debit Credit"].mean(), 2)
     rows.append(avg_row)
     
-    # Write headers
     ws.cell(row=1, column=1, value="Bank Name")
     ws.cell(row=1, column=1).fill = header_fill
     ws.cell(row=1, column=1).font = header_font
@@ -349,17 +456,14 @@ def create_detailed_by_date_file(df):
     col_idx = 3
     for date in dates:
         date_str = date.strftime("%A/%d/%b/%Y")
-        # Date header spans all terminals for this date
         ws.cell(row=1, column=col_idx, value=date_str)
         ws.cell(row=1, column=col_idx).fill = date_fill
         ws.cell(row=1, column=col_idx).font = date_font
         ws.cell(row=1, column=col_idx).alignment = center_align
         
-        # Merge cells for date header (3 columns per terminal)
         end_col = col_idx + (len(terminals) * 3) - 1
         ws.merge_cells(start_row=1, start_column=col_idx, end_row=1, end_column=end_col)
         
-        # Terminal headers row 2
         term_col = col_idx
         for term in terminals:
             ws.cell(row=2, column=term_col, value=f"#{term}")
@@ -368,7 +472,6 @@ def create_detailed_by_date_file(df):
             ws.cell(row=2, column=term_col).alignment = center_align
             ws.merge_cells(start_row=2, start_column=term_col, end_row=2, end_column=term_col+2)
             
-            # Debit/Credit/Total sub-headers row 3
             ws.cell(row=3, column=term_col, value="Debit").fill = sub_header_fill
             ws.cell(row=3, column=term_col).font = sub_header_font
             ws.cell(row=3, column=term_col).alignment = center_align
@@ -385,7 +488,6 @@ def create_detailed_by_date_file(df):
         
         col_idx = end_col + 1
     
-    # Write data rows starting from row 4
     for r_idx, row_data in enumerate(rows, 4):
         bank_val = row_data["Bank Name"]
         card_val = row_data["Card Scheme"]
@@ -413,19 +515,16 @@ def create_detailed_by_date_file(df):
                 credit = row_data[f"{date}_{term}_Credit"]
                 total = row_data[f"{date}_{term}_Total"]
                 
-                # Always show 0 instead of empty string
                 ws.cell(row=r_idx, column=col_idx, value=debit)
                 ws.cell(row=r_idx, column=col_idx+1, value=credit)
                 ws.cell(row=r_idx, column=col_idx+2, value=total)
                 
-                # Format numbers
                 ws.cell(row=r_idx, column=col_idx).number_format = "#,##0.00"
                 ws.cell(row=r_idx, column=col_idx+1).number_format = "#,##0.00"
                 ws.cell(row=r_idx, column=col_idx+2).number_format = "#,##0.00"
                 
                 col_idx += 3
     
-    # Set column widths
     ws.column_dimensions["A"].width = 18
     ws.column_dimensions["B"].width = 15
     for i in range(3, col_idx):
@@ -437,16 +536,8 @@ def create_detailed_by_date_file(df):
     return buffer, len(dates), len(terminals)
 
 # UI
-st.title("🏦 Terminal Summary Generator")
-st.markdown("Upload your terminal reconciliation file. Get **THREE** output files:")
-
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.info("📊 **Summary File**\\nBank + Card Scheme totals only")
-with col2:
-    st.info("📋 **Detailed File**\\nAll terminals as columns with Debit/Credit/Total")
-with col3:
-    st.info("📅 **Detailed by Date**\\nGrouped by Reconciliation Date (if multiple dates)")
+st.title("🏦 Geidea Terminal Summary Generator")
+st.markdown("Upload your terminal reconciliation file to generate Geidea reports")
 
 uploaded_file = st.file_uploader("📁 Upload Excel file", type=["xlsx", "xls"])
 
@@ -458,18 +549,19 @@ if uploaded_file:
         with st.expander("🔍 Preview Raw Data"):
             st.dataframe(df.head(10), use_container_width=True)
         
-        with st.spinner("Processing all files..."):
+        with st.spinner("Processing Geidea reports..."):
             df_processed = process_data(df)
             summary_buffer, summary_df, grand_total = create_summary_file(df_processed)
             detailed_buffer, num_terminals = create_detailed_file(df_processed)
             
-            # Check if multiple dates exist
             unique_dates = df_processed["Reconciliation Date"].dropna().unique()
             has_multiple_dates = len(unique_dates) > 1
             
             if has_multiple_dates:
-                date_buffer, num_dates, num_terminals_date = create_detailed_by_date_file(df_processed)
+                summary_date_buffer, summary_date_df, num_dates = create_summary_by_date_file(df_processed)
+                date_buffer, num_dates_detailed, num_terminals_date = create_detailed_by_date_file(df_processed)
             else:
+                summary_date_buffer = None
                 date_buffer = None
                 num_dates = 0
         
@@ -492,76 +584,92 @@ if uploaded_file:
             height=300
         )
         
-        st.subheader("⬇️ Download Files")
+        st.subheader("⬇️ Geidea: Download Reports")
         
         if has_multiple_dates:
-            col1, col2, col3 = st.columns(3)
+            st.markdown("**Four Geidea reports generated with multi-date support:**")
             
-            with col1:
-                st.download_button(
-                    label="📊 Download Summary",
-                    data=summary_buffer,
-                    file_name="01_SUMMARY_Totals_Only.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
-            
-            with col2:
-                st.download_button(
-                    label="📋 Download Detailed",
-                    data=detailed_buffer,
-                    file_name=f"02_DETAILED_All_Terminals_{num_terminals}_columns.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
-            
-            with col3:
-                st.download_button(
-                    label="📅 Download by Date",
-                    data=date_buffer,
-                    file_name=f"03_DETAILED_by_Date_{num_dates}_dates.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
-            
-            st.success(f"✅ All 3 files ready! Detailed by Date has {num_dates} dates × {num_terminals_date} terminals")
-        else:
             col1, col2 = st.columns(2)
             
             with col1:
                 st.download_button(
-                    label="📊 Download Summary",
+                    label="📊 Geidea: Summary Totals Only\\n\\nConsolidated totals by Bank and Card Scheme across all dates",
                     data=summary_buffer,
-                    file_name="01_SUMMARY_Totals_Only.xlsx",
+                    file_name="Geidea_01_SUMMARY_Totals_Only.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+                
+                st.download_button(
+                    label="📋 Geidea: Detailed All Terminals\\n\\nAll terminals as columns with Debit/Credit/Total breakdown",
+                    data=detailed_buffer,
+                    file_name=f"Geidea_02_DETAILED_All_Terminals_{num_terminals}_columns.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
             
             with col2:
                 st.download_button(
-                    label="📋 Download Detailed",
-                    data=detailed_buffer,
-                    file_name=f"02_DETAILED_All_Terminals_{num_terminals}_columns.xlsx",
+                    label="📅 Geidea: Summary by Date\\n\\nTotals grouped by Reconciliation Date with daily subtotals",
+                    data=summary_date_buffer,
+                    file_name=f"Geidea_03_SUMMARY_by_Date_{num_dates}_dates.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+                
+                st.download_button(
+                    label="📆 Geidea: Detailed by Date\\n\\nTerminal breakdown grouped by each Reconciliation Date",
+                    data=date_buffer,
+                    file_name=f"Geidea_04_DETAILED_by_Date_{num_dates}_dates.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
             
-            st.success(f"✅ Both files ready! Detailed file has {num_terminals} terminal columns")
+            st.success(f"✅ All 4 Geidea reports ready! ({num_dates} dates × {num_terminals} terminals)")
+            
+        else:
+            st.markdown("**Two Geidea reports generated:**")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.download_button(
+                    label="📊 Geidea: Summary Totals Only\\n\\nConsolidated totals by Bank and Card Scheme",
+                    data=summary_buffer,
+                    file_name="Geidea_01_SUMMARY_Totals_Only.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+            
+            with col2:
+                st.download_button(
+                    label="📋 Geidea: Detailed All Terminals\\n\\nAll terminals as columns with Debit/Credit/Total breakdown",
+                    data=detailed_buffer,
+                    file_name=f"Geidea_02_DETAILED_All_Terminals_{num_terminals}_columns.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+            
+            st.success(f"✅ Both Geidea reports ready! ({num_terminals} terminal columns)")
         
     except Exception as e:
         st.error(f"❌ Error: {str(e)}")
         st.info("Please check your file has columns: Terminal, Card Name, Ter. Total Debit, Ter. Total Credit")
 
 st.markdown("---")
-st.caption("Terminal Summary Generator v3.1 | Zeros for empty cells")
+st.caption("Geidea Terminal Summary Generator v4.0 | Multi-Date Reports with Zero Values")
 '''
 
 with open('app.py', 'w') as f:
     f.write(app_code)
 
-print("✅ Updated app.py - now showing zeros for empty cells!")
-print("\n🔄 Changes made:")
-print("   • Removed conditional that showed empty strings for zero values")
-print("   • All cells now display 0.00 instead of blank")
-print("   • Added number formatting (#,##0.00) to all numeric cells")
-print("   • Applied to both Detailed and Detailed_by_Date files")
+print("✅ Updated app.py with Geidea branding and Summary by Date!")
+print("\n🆕 New Features:")
+print("   • Geidea: prefix on all button labels")
+print("   • Descriptive subtitles under each button (using \\n\\n)")
+print("   • NEW: Summary by Date report (03) when multiple dates detected")
+print("   • Renumbered: 01-Summary, 02-Detailed, 03-Summary by Date, 04-Detailed by Date")
+print("   • All filenames prefixed with 'Geidea_'")
+print("\n📋 Button format:")
+print("   📊 Geidea: Summary Totals Only")
+print("   Consolidated totals by Bank and Card Scheme across all dates")

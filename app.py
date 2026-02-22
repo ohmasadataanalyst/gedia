@@ -5,7 +5,6 @@ from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 import io
 import re
-import os
 
 st.set_page_config(page_title="Geidea & Foodics Summary Generator", layout="wide")
 
@@ -33,10 +32,10 @@ TERMINAL_BANK_MAP = {
 }
 
 
-def read_uploaded_file(uploaded_file):
-    """Read uploaded file with multiple format attempts"""
-    file_name = uploaded_file.name.lower()
+# ==================== FILE READING & DETECTION ====================
 
+def read_uploaded_file(uploaded_file):
+    file_name = uploaded_file.name.lower()
     try:
         if file_name.endswith('.xlsx'):
             return pd.read_excel(uploaded_file, engine='openpyxl')
@@ -44,10 +43,9 @@ def read_uploaded_file(uploaded_file):
             try:
                 return pd.read_excel(uploaded_file, engine='xlrd')
             except ImportError:
-                st.error("❌ Missing 'xlrd' package. Please install: pip install xlrd>=2.0.1")
+                st.error("Missing 'xlrd' package. Please install: pip install xlrd>=2.0.1")
                 raise
         elif file_name.endswith('.csv'):
-            # Try tab-separated first (Foodics export style), then comma
             try:
                 uploaded_file.seek(0)
                 df = pd.read_csv(uploaded_file, sep='\t')
@@ -62,7 +60,6 @@ def read_uploaded_file(uploaded_file):
                 uploaded_file.seek(0)
                 return pd.read_csv(uploaded_file, sep=';')
         else:
-            # Auto-detect
             try:
                 return pd.read_excel(uploaded_file, engine='openpyxl')
             except Exception:
@@ -77,32 +74,21 @@ def read_uploaded_file(uploaded_file):
 
 
 def detect_file_type(df):
-    """Detect if file is Geidea or Foodics format"""
     columns = [str(col).lower().strip() for col in df.columns]
-
-    # Clean CSV with proper headers
     if any("payment method" in col for col in columns) and any("branch" in col for col in columns):
         return "foodics"
-
-    # Geidea indicators
     if "terminal" in columns and "card name" in columns:
         return "geidea"
-
-    # Fallback: scan cell values (metadata-wrapped Excel exports)
     try:
         all_values = df.astype(str).values.flatten()
-        has_payment_method = any("Payment Method" in v for v in all_values)
-        has_branch = any("Branch" in v for v in all_values)
-        if has_payment_method and has_branch:
+        if any("Payment Method" in v for v in all_values) and any("Branch" in v for v in all_values):
             return "foodics"
     except Exception:
         pass
-
     return "unknown"
 
 
 def parse_foodics_date_range(date_range_str):
-    """Extract dates from Foodics date range string"""
     try:
         dates = re.findall(r"\d{4}-\d{2}-\d{2}", str(date_range_str))
         if len(dates) >= 2:
@@ -114,77 +100,59 @@ def parse_foodics_date_range(date_range_str):
     return []
 
 
+# ==================== DATA PROCESSING ====================
+
 def process_geidea_data(df):
-    """Process Geidea uploaded data"""
     df["Terminal"] = df["Terminal"].astype(str).str.strip().str.replace(".0", "", regex=False)
     df["Bank Name"] = df["Terminal"].map(TERMINAL_BANK_MAP).fillna("Unknown Bank")
     df["Total"] = df["Ter. Total Debit"].fillna(0) + df["Ter. Total Credit"].fillna(0)
     df["Total Debit"] = df["Ter. Total Debit"]
     df["Total Credit"] = df["Ter. Total Credit"]
     df["Total Debit Credit"] = df["Ter.Total Debit Credit"]
-
-    date_col = None
-    for col in df.columns:
-        if "date" in col.lower() and "recon" in col.lower():
-            date_col = col
-            break
-
-    if date_col:
-        df["Reconciliation Date"] = pd.to_datetime(df[date_col]).dt.date
-    else:
-        df["Reconciliation Date"] = None
-
+    date_col = next((col for col in df.columns if "date" in col.lower() and "recon" in col.lower()), None)
+    df["Reconciliation Date"] = pd.to_datetime(df[date_col]).dt.date if date_col else None
     return df
 
 
 def process_foodics_data(df):
-    """Process Foodics Payments Report data — handles both clean CSV and metadata-wrapped Excel exports"""
     columns_lower = [str(col).lower().strip() for col in df.columns]
 
-    # ── CLEAN CSV PATH (headers already present) ──────────────────────────────
+    # Clean CSV path — headers already present
     if "payment method" in columns_lower and "branch" in columns_lower:
         df_clean = df.copy()
         df_clean.columns = [str(col).strip() for col in df_clean.columns]
         date_range = ""
         dates = []
-
-    # ── WRAPPED EXCEL PATH (metadata rows before the real header) ─────────────
     else:
+        # Wrapped Excel path — find the header row
         data_start = 0
         for idx, row in df.iterrows():
             if "Payment Method" in str(row.values):
                 data_start = idx
                 break
-
         df_clean = df.iloc[data_start:].reset_index(drop=True)
         df_clean.columns = df_clean.iloc[0]
         df_clean = df_clean[1:].reset_index(drop=True)
         df_clean.columns = [str(col).strip() for col in df_clean.columns]
-
         date_range = ""
         for idx, row in df.iterrows():
             if "Date Range" in str(row.values):
                 date_range = row.iloc[1] if len(row) > 1 else ""
                 break
-
         dates = parse_foodics_date_range(date_range)
 
-    # ── COMMON PROCESSING ─────────────────────────────────────────────────────
     df_clean["Net Amount"] = pd.to_numeric(df_clean["Net Amount"], errors="coerce").fillna(0)
     df_clean["Amount"] = pd.to_numeric(df_clean["Amount"], errors="coerce").fillna(0)
     df_clean["Return Amount"] = pd.to_numeric(df_clean["Return Amount"], errors="coerce").fillna(0)
     df_clean["Count"] = pd.to_numeric(df_clean["Count"], errors="coerce").fillna(0).astype(int)
-
     df_clean["Report Date Range"] = date_range
     df_clean["Dates"] = [dates] * len(df_clean)
-
     return df_clean, dates
 
 
 # ==================== GEIDEA FUNCTIONS ====================
 
 def create_geidea_summary_file(df):
-    """Create simple summary by Bank + Card (Totals only)"""
     summary = df.groupby(["Bank Name", "Card Name"]).agg({"Total": "sum"}).reset_index()
     summary["Sort"] = summary["Bank Name"].apply(lambda x: 1 if x == "Unknown Bank" else 0)
     summary = summary.sort_values(["Sort", "Bank Name", "Card Name"]).drop("Sort", axis=1)
@@ -194,25 +162,22 @@ def create_geidea_summary_file(df):
     ws.title = "Summary"
 
     header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
-    header_font = Font(color="FFFFFF", bold=True, size=12)
     unknown_fill = PatternFill(start_color="FF6B6B", end_color="FF6B6B", fill_type="solid")
     total_fill = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
 
-    headers = ["Bank Name", "Card Scheme", "Total"]
-    for col, header in enumerate(headers, 1):
+    for col, header in enumerate(["Bank Name", "Card Scheme", "Total"], 1):
         cell = ws.cell(row=1, column=col, value=header)
         cell.fill = header_fill
-        cell.font = header_font
+        cell.font = Font(color="FFFFFF", bold=True, size=12)
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
     row_idx = 2
     for _, data in summary.iterrows():
         ws.cell(row=row_idx, column=1, value=data["Bank Name"])
         ws.cell(row=row_idx, column=2, value=data["Card Name"])
-        ws.cell(row=row_idx, column=3, value=data["Total"])
-        ws.cell(row=row_idx, column=3).number_format = "#,##0.00"
-        ws.cell(row=row_idx, column=3).alignment = Alignment(horizontal="right")
-
+        c = ws.cell(row=row_idx, column=3, value=data["Total"])
+        c.number_format = "#,##0.00"
+        c.alignment = Alignment(horizontal="right")
         if data["Bank Name"] == "Unknown Bank":
             for col in range(1, 4):
                 ws.cell(row=row_idx, column=col).fill = unknown_fill
@@ -221,26 +186,21 @@ def create_geidea_summary_file(df):
 
     grand_total = summary["Total"].sum()
     row_idx += 1
-    ws.cell(row=row_idx, column=1, value="GRAND TOTAL")
-    ws.cell(row=row_idx, column=2, value="ALL")
-    ws.cell(row=row_idx, column=3, value=grand_total)
+    for col, val in {1: "GRAND TOTAL", 2: "ALL", 3: grand_total}.items():
+        cell = ws.cell(row=row_idx, column=col, value=val)
+        cell.fill = total_fill
+        cell.font = Font(bold=True, size=12)
     ws.cell(row=row_idx, column=3).number_format = "#,##0.00"
-    for col in range(1, 4):
-        ws.cell(row=row_idx, column=col).fill = total_fill
-        ws.cell(row=row_idx, column=col).font = Font(bold=True, size=12)
 
     ws.column_dimensions["A"].width = 20
     ws.column_dimensions["B"].width = 18
     ws.column_dimensions["C"].width = 15
 
-    buffer = io.BytesIO()
-    wb.save(buffer)
-    buffer.seek(0)
-    return buffer, summary, grand_total
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    return buf, summary, grand_total
 
 
 def create_geidea_summary_by_date_file(df):
-    """Create summary by Date + Bank + Card"""
     if df["Reconciliation Date"].isna().all():
         return None, None, 0
 
@@ -253,18 +213,15 @@ def create_geidea_summary_by_date_file(df):
     ws.title = "Summary_by_Date"
 
     header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
-    header_font = Font(color="FFFFFF", bold=True, size=12)
     date_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
-    date_font = Font(color="FFFFFF", bold=True, size=11)
     unknown_fill = PatternFill(start_color="FF6B6B", end_color="FF6B6B", fill_type="solid")
     total_fill = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
     subtotal_fill = PatternFill(start_color="E0E0E0", end_color="E0E0E0", fill_type="solid")
 
-    headers = ["Date", "Bank Name", "Card Scheme", "Total"]
-    for col, header in enumerate(headers, 1):
+    for col, header in enumerate(["Date", "Bank Name", "Card Scheme", "Total"], 1):
         cell = ws.cell(row=1, column=col, value=header)
         cell.fill = header_fill
-        cell.font = header_font
+        cell.font = Font(color="FFFFFF", bold=True, size=12)
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
     row_idx = 2
@@ -279,16 +236,15 @@ def create_geidea_summary_by_date_file(df):
             if current_date is not None:
                 row_idx += 1
                 ws.cell(row=row_idx, column=2, value="DATE SUBTOTAL")
-                ws.cell(row=row_idx, column=4, value=date_totals[current_date])
-                ws.cell(row=row_idx, column=4).number_format = "#,##0.00"
-                ws.cell(row=row_idx, column=4).font = Font(bold=True)
+                c = ws.cell(row=row_idx, column=4, value=date_totals[current_date])
+                c.number_format = "#,##0.00"; c.font = Font(bold=True)
                 for col in range(1, 5):
                     ws.cell(row=row_idx, column=col).fill = subtotal_fill
                 row_idx += 1
 
             ws.cell(row=row_idx, column=1, value=date_str)
             ws.cell(row=row_idx, column=1).fill = date_fill
-            ws.cell(row=row_idx, column=1).font = date_font
+            ws.cell(row=row_idx, column=1).font = Font(color="FFFFFF", bold=True, size=11)
             ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=4)
             row_idx += 1
             current_date = date_val
@@ -296,55 +252,42 @@ def create_geidea_summary_by_date_file(df):
 
         ws.cell(row=row_idx, column=2, value=data["Bank Name"])
         ws.cell(row=row_idx, column=3, value=data["Card Name"])
-        ws.cell(row=row_idx, column=4, value=data["Total"])
-        ws.cell(row=row_idx, column=4).number_format = "#,##0.00"
-        ws.cell(row=row_idx, column=4).alignment = Alignment(horizontal="right")
-
+        c = ws.cell(row=row_idx, column=4, value=data["Total"])
+        c.number_format = "#,##0.00"; c.alignment = Alignment(horizontal="right")
         if data["Bank Name"] == "Unknown Bank":
             for col in range(2, 5):
                 ws.cell(row=row_idx, column=col).fill = unknown_fill
                 ws.cell(row=row_idx, column=col).font = Font(bold=True, color="FFFFFF")
-
         date_totals[current_date] += data["Total"]
         row_idx += 1
 
     if current_date is not None:
         row_idx += 1
         ws.cell(row=row_idx, column=2, value="DATE SUBTOTAL")
-        ws.cell(row=row_idx, column=4, value=date_totals[current_date])
-        ws.cell(row=row_idx, column=4).number_format = "#,##0.00"
-        ws.cell(row=row_idx, column=4).font = Font(bold=True)
+        c = ws.cell(row=row_idx, column=4, value=date_totals[current_date])
+        c.number_format = "#,##0.00"; c.font = Font(bold=True)
         for col in range(1, 5):
             ws.cell(row=row_idx, column=col).fill = subtotal_fill
         row_idx += 1
 
     row_idx += 1
     grand_total = summary["Total"].sum()
-    ws.cell(row=row_idx, column=2, value="GRAND TOTAL")
-    ws.cell(row=row_idx, column=3, value="ALL DATES")
-    ws.cell(row=row_idx, column=4, value=grand_total)
+    for col, val in {2: "GRAND TOTAL", 3: "ALL DATES", 4: grand_total}.items():
+        cell = ws.cell(row=row_idx, column=col, value=val)
+        cell.fill = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
+        cell.font = Font(bold=True, size=12)
     ws.cell(row=row_idx, column=4).number_format = "#,##0.00"
-    for col in range(1, 5):
-        ws.cell(row=row_idx, column=col).fill = total_fill
-        ws.cell(row=row_idx, column=col).font = Font(bold=True, size=12)
 
-    ws.column_dimensions["A"].width = 20
-    ws.column_dimensions["B"].width = 20
-    ws.column_dimensions["C"].width = 18
-    ws.column_dimensions["D"].width = 15
+    for ltr, w in zip("ABCD", [20, 20, 18, 15]):
+        ws.column_dimensions[ltr].width = w
 
-    buffer = io.BytesIO()
-    wb.save(buffer)
-    buffer.seek(0)
-    return buffer, summary, len(summary["Reconciliation Date"].unique())
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    return buf, summary, len(summary["Reconciliation Date"].unique())
 
 
 def create_geidea_detailed_file(df):
-    """Create detailed file with all terminals as columns"""
     summary = df.groupby(["Terminal", "Bank Name", "Card Name"]).agg({
-        "Total Debit": "sum",
-        "Total Credit": "sum",
-        "Total Debit Credit": "sum"
+        "Total Debit": "sum", "Total Credit": "sum", "Total Debit Credit": "sum"
     }).reset_index()
 
     terminals = sorted(summary["Terminal"].unique())
@@ -354,88 +297,62 @@ def create_geidea_detailed_file(df):
     rows = []
     for bank in banks:
         for card in card_schemes:
-            bank_card_data = summary[(summary["Bank Name"] == bank) & (summary["Card Name"] == card)]
-            if len(bank_card_data) == 0:
+            bc = summary[(summary["Bank Name"] == bank) & (summary["Card Name"] == card)]
+            if bc.empty:
                 continue
             row = {"Bank Name": bank, "Card Scheme": card}
             for term in terminals:
-                term_data = bank_card_data[bank_card_data["Terminal"] == term]
-                if len(term_data) > 0:
-                    row[f"{term}_Debit"] = term_data["Total Debit"].values[0]
-                    row[f"{term}_Credit"] = term_data["Total Credit"].values[0]
-                    row[f"{term}_Total"] = term_data["Total Debit Credit"].values[0]
-                else:
-                    row[f"{term}_Debit"] = 0
-                    row[f"{term}_Credit"] = 0
-                    row[f"{term}_Total"] = 0
+                td = bc[bc["Terminal"] == term]
+                row[f"{term}_Debit"] = td["Total Debit"].values[0] if not td.empty else 0
+                row[f"{term}_Credit"] = td["Total Credit"].values[0] if not td.empty else 0
+                row[f"{term}_Total"] = td["Total Debit Credit"].values[0] if not td.empty else 0
             rows.append(row)
 
-    total_row = {"Bank Name": "TOTAL", "Card Scheme": "ALL"}
-    for term in terminals:
-        term_data = summary[summary["Terminal"] == term]
-        total_row[f"{term}_Debit"] = term_data["Total Debit"].sum()
-        total_row[f"{term}_Credit"] = term_data["Total Credit"].sum()
-        total_row[f"{term}_Total"] = term_data["Total Debit Credit"].sum()
-    rows.append(total_row)
-
-    avg_row = {"Bank Name": "AVG", "Card Scheme": "ALL"}
-    for term in terminals:
-        term_data = summary[summary["Terminal"] == term]
-        avg_row[f"{term}_Debit"] = round(term_data["Total Debit"].mean(), 2)
-        avg_row[f"{term}_Credit"] = round(term_data["Total Credit"].mean(), 2)
-        avg_row[f"{term}_Total"] = round(term_data["Total Debit Credit"].mean(), 2)
-    rows.append(avg_row)
+    for label in ["TOTAL", "AVG"]:
+        row = {"Bank Name": label, "Card Scheme": "ALL"}
+        for term in terminals:
+            td = summary[summary["Terminal"] == term]
+            row[f"{term}_Debit"] = round(td["Total Debit"].sum() if label == "TOTAL" else td["Total Debit"].mean(), 2)
+            row[f"{term}_Credit"] = round(td["Total Credit"].sum() if label == "TOTAL" else td["Total Credit"].mean(), 2)
+            row[f"{term}_Total"] = round(td["Total Debit Credit"].sum() if label == "TOTAL" else td["Total Debit Credit"].mean(), 2)
+        rows.append(row)
 
     wb = Workbook()
     ws = wb.active
     ws.title = "Detailed"
 
     header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
-    header_font = Font(color="FFFFFF", bold=True, size=9)
-    sub_header_fill = PatternFill(start_color="B8CCE4", end_color="B8CCE4", fill_type="solid")
-    sub_header_font = Font(bold=True, size=8)
+    sub_fill = PatternFill(start_color="B8CCE4", end_color="B8CCE4", fill_type="solid")
     unknown_fill = PatternFill(start_color="FF6B6B", end_color="FF6B6B", fill_type="solid")
-    center_align = Alignment(horizontal="center", vertical="center")
+    center = Alignment(horizontal="center", vertical="center")
 
-    ws.cell(row=1, column=1, value="Bank Name").fill = header_fill
-    ws.cell(row=1, column=1).font = header_font
-    ws.cell(row=1, column=1).alignment = center_align
-    ws.cell(row=1, column=2, value="Card Scheme").fill = header_fill
-    ws.cell(row=1, column=2).font = header_font
-    ws.cell(row=1, column=2).alignment = center_align
+    for c, v in [(1, "Bank Name"), (2, "Card Scheme")]:
+        cell = ws.cell(row=1, column=c, value=v)
+        cell.fill = header_fill; cell.font = Font(color="FFFFFF", bold=True, size=9); cell.alignment = center
 
     col_idx = 3
     for term in terminals:
-        ws.cell(row=1, column=col_idx, value=f"#{term}")
-        ws.cell(row=1, column=col_idx).fill = header_fill
-        ws.cell(row=1, column=col_idx).font = header_font
-        ws.cell(row=1, column=col_idx).alignment = center_align
+        ws.cell(row=1, column=col_idx, value=f"#{term}").fill = header_fill
+        ws.cell(row=1, column=col_idx).font = Font(color="FFFFFF", bold=True, size=9)
+        ws.cell(row=1, column=col_idx).alignment = center
         ws.merge_cells(start_row=1, start_column=col_idx, end_row=1, end_column=col_idx + 2)
-
-        for label, offset in [("Debit", 0), ("Credit", 1), ("Total", 2)]:
-            ws.cell(row=2, column=col_idx + offset, value=label).fill = sub_header_fill
-            ws.cell(row=2, column=col_idx + offset).font = sub_header_font
-            ws.cell(row=2, column=col_idx + offset).alignment = center_align
-
+        for lbl, off in [("Debit", 0), ("Credit", 1), ("Total", 2)]:
+            c2 = ws.cell(row=2, column=col_idx + off, value=lbl)
+            c2.fill = sub_fill; c2.font = Font(bold=True, size=8); c2.alignment = center
         col_idx += 3
 
     for r_idx, row_data in enumerate(rows, 3):
-        bank_val = row_data["Bank Name"]
-        card_val = row_data["Card Scheme"]
-
-        for c, val in [(1, bank_val), (2, card_val)]:
+        bv, cv = row_data["Bank Name"], row_data["Card Scheme"]
+        for c, val in [(1, bv), (2, cv)]:
             cell = ws.cell(row=r_idx, column=c, value=val)
-            if bank_val == "Unknown Bank":
-                cell.fill = unknown_fill
-                cell.font = Font(bold=True, color="FFFFFF")
-            elif bank_val in ["TOTAL", "AVG"]:
-                cell.font = Font(bold=True)
-                cell.fill = PatternFill(start_color="E0E0E0", fill_type="solid")
-
+            if bv == "Unknown Bank":
+                cell.fill = unknown_fill; cell.font = Font(bold=True, color="FFFFFF")
+            elif bv in ["TOTAL", "AVG"]:
+                cell.fill = PatternFill(start_color="E0E0E0", fill_type="solid"); cell.font = Font(bold=True)
         col_idx = 3
         for term in terminals:
-            for offset, key in enumerate(["Debit", "Credit", "Total"]):
-                cell = ws.cell(row=r_idx, column=col_idx + offset, value=row_data[f"{term}_{key}"])
+            for off, key in enumerate(["Debit", "Credit", "Total"]):
+                cell = ws.cell(row=r_idx, column=col_idx + off, value=row_data[f"{term}_{key}"])
                 cell.number_format = "#,##0.00"
             col_idx += 3
 
@@ -444,21 +361,16 @@ def create_geidea_detailed_file(df):
     for i in range(3, col_idx):
         ws.column_dimensions[get_column_letter(i)].width = 11
 
-    buffer = io.BytesIO()
-    wb.save(buffer)
-    buffer.seek(0)
-    return buffer, len(terminals)
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    return buf, len(terminals)
 
 
 def create_geidea_detailed_by_date_file(df):
-    """Create detailed file grouped by Reconciliation Date"""
     if df["Reconciliation Date"].isna().all():
         return None, 0, 0
 
     summary = df.groupby(["Reconciliation Date", "Terminal", "Bank Name", "Card Name"]).agg({
-        "Total Debit": "sum",
-        "Total Credit": "sum",
-        "Total Debit Credit": "sum"
+        "Total Debit": "sum", "Total Credit": "sum", "Total Debit Credit": "sum"
     }).reset_index()
 
     dates = sorted(summary["Reconciliation Date"].unique())
@@ -466,113 +378,80 @@ def create_geidea_detailed_by_date_file(df):
     banks = sorted(summary["Bank Name"].unique(), key=lambda x: (x == "Unknown Bank", x))
     card_schemes = sorted(summary["Card Name"].unique())
 
+    rows = []
+    for bank in banks:
+        for card in card_schemes:
+            bc = summary[(summary["Bank Name"] == bank) & (summary["Card Name"] == card)]
+            if bc.empty:
+                continue
+            row = {"Bank Name": bank, "Card Scheme": card}
+            for date in dates:
+                dd = bc[bc["Reconciliation Date"] == date]
+                for term in terminals:
+                    td = dd[dd["Terminal"] == term]
+                    row[f"{date}_{term}_Debit"] = td["Total Debit"].values[0] if not td.empty else 0
+                    row[f"{date}_{term}_Credit"] = td["Total Credit"].values[0] if not td.empty else 0
+                    row[f"{date}_{term}_Total"] = td["Total Debit Credit"].values[0] if not td.empty else 0
+            rows.append(row)
+
+    for label in ["TOTAL", "AVG"]:
+        row = {"Bank Name": label, "Card Scheme": "ALL"}
+        for date in dates:
+            dd = summary[summary["Reconciliation Date"] == date]
+            for term in terminals:
+                td = dd[dd["Terminal"] == term]
+                row[f"{date}_{term}_Debit"] = round(td["Total Debit"].sum() if label == "TOTAL" else td["Total Debit"].mean(), 2)
+                row[f"{date}_{term}_Credit"] = round(td["Total Credit"].sum() if label == "TOTAL" else td["Total Credit"].mean(), 2)
+                row[f"{date}_{term}_Total"] = round(td["Total Debit Credit"].sum() if label == "TOTAL" else td["Total Debit Credit"].mean(), 2)
+        rows.append(row)
+
     wb = Workbook()
     ws = wb.active
     ws.title = "Detailed_by_Date"
 
     date_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
-    date_font = Font(color="FFFFFF", bold=True, size=11)
     header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
-    header_font = Font(color="FFFFFF", bold=True, size=9)
-    sub_header_fill = PatternFill(start_color="B8CCE4", end_color="B8CCE4", fill_type="solid")
-    sub_header_font = Font(bold=True, size=8)
+    sub_fill = PatternFill(start_color="B8CCE4", end_color="B8CCE4", fill_type="solid")
     unknown_fill = PatternFill(start_color="FF6B6B", end_color="FF6B6B", fill_type="solid")
-    total_fill = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
-    center_align = Alignment(horizontal="center", vertical="center")
+    center = Alignment(horizontal="center", vertical="center")
 
-    rows = []
-    for bank in banks:
-        for card in card_schemes:
-            bank_card_data = summary[(summary["Bank Name"] == bank) & (summary["Card Name"] == card)]
-            if len(bank_card_data) == 0:
-                continue
-            row = {"Bank Name": bank, "Card Scheme": card}
-            for date in dates:
-                date_data = bank_card_data[bank_card_data["Reconciliation Date"] == date]
-                for term in terminals:
-                    term_data = date_data[date_data["Terminal"] == term]
-                    if len(term_data) > 0:
-                        row[f"{date}_{term}_Debit"] = term_data["Total Debit"].values[0]
-                        row[f"{date}_{term}_Credit"] = term_data["Total Credit"].values[0]
-                        row[f"{date}_{term}_Total"] = term_data["Total Debit Credit"].values[0]
-                    else:
-                        row[f"{date}_{term}_Debit"] = 0
-                        row[f"{date}_{term}_Credit"] = 0
-                        row[f"{date}_{term}_Total"] = 0
-            rows.append(row)
-
-    total_row = {"Bank Name": "TOTAL", "Card Scheme": "ALL"}
-    for date in dates:
-        date_data = summary[summary["Reconciliation Date"] == date]
-        for term in terminals:
-            term_data = date_data[date_data["Terminal"] == term]
-            total_row[f"{date}_{term}_Debit"] = term_data["Total Debit"].sum()
-            total_row[f"{date}_{term}_Credit"] = term_data["Total Credit"].sum()
-            total_row[f"{date}_{term}_Total"] = term_data["Total Debit Credit"].sum()
-    rows.append(total_row)
-
-    avg_row = {"Bank Name": "AVG", "Card Scheme": "ALL"}
-    for date in dates:
-        date_data = summary[summary["Reconciliation Date"] == date]
-        for term in terminals:
-            term_data = date_data[date_data["Terminal"] == term]
-            avg_row[f"{date}_{term}_Debit"] = round(term_data["Total Debit"].mean(), 2)
-            avg_row[f"{date}_{term}_Credit"] = round(term_data["Total Credit"].mean(), 2)
-            avg_row[f"{date}_{term}_Total"] = round(term_data["Total Debit Credit"].mean(), 2)
-    rows.append(avg_row)
-
-    ws.cell(row=1, column=1, value="Bank Name").fill = header_fill
-    ws.cell(row=1, column=1).font = header_font
-    ws.cell(row=1, column=1).alignment = center_align
-    ws.cell(row=1, column=2, value="Card Scheme").fill = header_fill
-    ws.cell(row=1, column=2).font = header_font
-    ws.cell(row=1, column=2).alignment = center_align
+    for c, v in [(1, "Bank Name"), (2, "Card Scheme")]:
+        cell = ws.cell(row=1, column=c, value=v)
+        cell.fill = header_fill; cell.font = Font(color="FFFFFF", bold=True, size=9); cell.alignment = center
 
     col_idx = 3
     for date in dates:
-        date_str = date.strftime("%A/%d/%b/%Y")
         end_col = col_idx + (len(terminals) * 3) - 1
-        ws.cell(row=1, column=col_idx, value=date_str)
+        ws.cell(row=1, column=col_idx, value=date.strftime("%A/%d/%b/%Y"))
         ws.cell(row=1, column=col_idx).fill = date_fill
-        ws.cell(row=1, column=col_idx).font = date_font
-        ws.cell(row=1, column=col_idx).alignment = center_align
+        ws.cell(row=1, column=col_idx).font = Font(color="FFFFFF", bold=True, size=11)
+        ws.cell(row=1, column=col_idx).alignment = center
         ws.merge_cells(start_row=1, start_column=col_idx, end_row=1, end_column=end_col)
-
         term_col = col_idx
         for term in terminals:
-            ws.cell(row=2, column=term_col, value=f"#{term}")
-            ws.cell(row=2, column=term_col).fill = header_fill
-            ws.cell(row=2, column=term_col).font = header_font
-            ws.cell(row=2, column=term_col).alignment = center_align
+            ws.cell(row=2, column=term_col, value=f"#{term}").fill = header_fill
+            ws.cell(row=2, column=term_col).font = Font(color="FFFFFF", bold=True, size=9)
+            ws.cell(row=2, column=term_col).alignment = center
             ws.merge_cells(start_row=2, start_column=term_col, end_row=2, end_column=term_col + 2)
-
-            for label, offset in [("Debit", 0), ("Credit", 1), ("Total", 2)]:
-                ws.cell(row=3, column=term_col + offset, value=label).fill = sub_header_fill
-                ws.cell(row=3, column=term_col + offset).font = sub_header_font
-                ws.cell(row=3, column=term_col + offset).alignment = center_align
-
+            for lbl, off in [("Debit", 0), ("Credit", 1), ("Total", 2)]:
+                c2 = ws.cell(row=3, column=term_col + off, value=lbl)
+                c2.fill = sub_fill; c2.font = Font(bold=True, size=8); c2.alignment = center
             term_col += 3
-
         col_idx = end_col + 1
 
     for r_idx, row_data in enumerate(rows, 4):
-        bank_val = row_data["Bank Name"]
-        card_val = row_data["Card Scheme"]
-
-        for c, val in [(1, bank_val), (2, card_val)]:
+        bv, cv = row_data["Bank Name"], row_data["Card Scheme"]
+        for c, val in [(1, bv), (2, cv)]:
             cell = ws.cell(row=r_idx, column=c, value=val)
-            if bank_val == "Unknown Bank":
-                cell.fill = unknown_fill
-                cell.font = Font(bold=True, color="FFFFFF")
-            elif bank_val in ["TOTAL", "AVG"]:
-                cell.font = Font(bold=True)
-                cell.fill = PatternFill(start_color="E0E0E0", fill_type="solid")
-
+            if bv == "Unknown Bank":
+                cell.fill = unknown_fill; cell.font = Font(bold=True, color="FFFFFF")
+            elif bv in ["TOTAL", "AVG"]:
+                cell.fill = PatternFill(start_color="E0E0E0", fill_type="solid"); cell.font = Font(bold=True)
         col_idx = 3
         for date in dates:
             for term in terminals:
-                for offset, key in enumerate(["Debit", "Credit", "Total"]):
-                    cell = ws.cell(row=r_idx, column=col_idx + offset, value=row_data[f"{date}_{term}_{key}"])
+                for off, key in enumerate(["Debit", "Credit", "Total"]):
+                    cell = ws.cell(row=r_idx, column=col_idx + off, value=row_data[f"{date}_{term}_{key}"])
                     cell.number_format = "#,##0.00"
                 col_idx += 3
 
@@ -581,43 +460,30 @@ def create_geidea_detailed_by_date_file(df):
     for i in range(3, col_idx):
         ws.column_dimensions[get_column_letter(i)].width = 11
 
-    buffer = io.BytesIO()
-    wb.save(buffer)
-    buffer.seek(0)
-    return buffer, len(dates), len(terminals)
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    return buf, len(dates), len(terminals)
 
 
 # ==================== FOODICS FUNCTIONS ====================
 
 def create_foodics_summary_by_branch(df):
-    """Create Foodics summary grouped by Branch"""
     summary = df.groupby(["Branch", "Payment Method"]).agg({
-        "Net Amount": "sum",
-        "Amount": "sum",
-        "Return Amount": "sum",
-        "Count": "sum"
-    }).reset_index()
-
-    summary = summary.sort_values(["Branch", "Net Amount"], ascending=[True, False])
+        "Net Amount": "sum", "Amount": "sum", "Return Amount": "sum", "Count": "sum"
+    }).reset_index().sort_values(["Branch", "Net Amount"], ascending=[True, False])
 
     wb = Workbook()
     ws = wb.active
     ws.title = "Summary_by_Branch"
 
     header_fill = PatternFill(start_color="2E7D32", end_color="2E7D32", fill_type="solid")
-    header_font = Font(color="FFFFFF", bold=True, size=11)
     branch_fill = PatternFill(start_color="4CAF50", end_color="4CAF50", fill_type="solid")
-    branch_font = Font(color="FFFFFF", bold=True, size=10)
     subtotal_fill = PatternFill(start_color="C8E6C9", end_color="C8E6C9", fill_type="solid")
     total_fill = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
-    center_align = Alignment(horizontal="center", vertical="center")
+    center = Alignment(horizontal="center", vertical="center")
 
-    headers = ["Branch", "Payment Method", "Net Amount", "Amount", "Returns", "Count"]
-    for col, header in enumerate(headers, 1):
+    for col, header in enumerate(["Branch", "Payment Method", "Net Amount", "Amount", "Returns", "Count"], 1):
         cell = ws.cell(row=1, column=col, value=header)
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = center_align
+        cell.fill = header_fill; cell.font = Font(color="FFFFFF", bold=True, size=11); cell.alignment = center
 
     row_idx = 2
     current_branch = None
@@ -625,15 +491,12 @@ def create_foodics_summary_by_branch(df):
 
     for _, data in summary.iterrows():
         branch = data["Branch"]
-
         if branch != current_branch:
             if current_branch is not None:
                 row_idx += 1
-                ws.cell(row=row_idx, column=2, value="BRANCH SUBTOTAL")
-                ws.cell(row=row_idx, column=3, value=branch_totals[current_branch]["net"])
-                ws.cell(row=row_idx, column=4, value=branch_totals[current_branch]["amount"])
-                ws.cell(row=row_idx, column=5, value=branch_totals[current_branch]["returns"])
-                ws.cell(row=row_idx, column=6, value=branch_totals[current_branch]["count"])
+                bt = branch_totals[current_branch]
+                for col, val in [(2, "BRANCH SUBTOTAL"), (3, bt["net"]), (4, bt["amount"]), (5, bt["returns"]), (6, bt["count"])]:
+                    ws.cell(row=row_idx, column=col, value=val)
                 for col in range(1, 7):
                     ws.cell(row=row_idx, column=col).fill = subtotal_fill
                     ws.cell(row=row_idx, column=col).font = Font(bold=True)
@@ -643,22 +506,19 @@ def create_foodics_summary_by_branch(df):
 
             ws.cell(row=row_idx, column=1, value=branch)
             ws.cell(row=row_idx, column=1).fill = branch_fill
-            ws.cell(row=row_idx, column=1).font = branch_font
+            ws.cell(row=row_idx, column=1).font = Font(color="FFFFFF", bold=True, size=10)
             ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=6)
             row_idx += 1
             current_branch = branch
             branch_totals[current_branch] = {"net": 0, "amount": 0, "returns": 0, "count": 0}
 
-        ws.cell(row=row_idx, column=1, value="")
         ws.cell(row=row_idx, column=2, value=data["Payment Method"])
         ws.cell(row=row_idx, column=3, value=data["Net Amount"])
         ws.cell(row=row_idx, column=4, value=data["Amount"])
         ws.cell(row=row_idx, column=5, value=data["Return Amount"])
         ws.cell(row=row_idx, column=6, value=data["Count"])
-
         for col in range(3, 7):
             ws.cell(row=row_idx, column=col).number_format = "#,##0.00" if col < 6 else "#,##0"
-
         branch_totals[current_branch]["net"] += data["Net Amount"]
         branch_totals[current_branch]["amount"] += data["Amount"]
         branch_totals[current_branch]["returns"] += data["Return Amount"]
@@ -667,11 +527,9 @@ def create_foodics_summary_by_branch(df):
 
     if current_branch is not None:
         row_idx += 1
-        ws.cell(row=row_idx, column=2, value="BRANCH SUBTOTAL")
-        ws.cell(row=row_idx, column=3, value=branch_totals[current_branch]["net"])
-        ws.cell(row=row_idx, column=4, value=branch_totals[current_branch]["amount"])
-        ws.cell(row=row_idx, column=5, value=branch_totals[current_branch]["returns"])
-        ws.cell(row=row_idx, column=6, value=branch_totals[current_branch]["count"])
+        bt = branch_totals[current_branch]
+        for col, val in [(2, "BRANCH SUBTOTAL"), (3, bt["net"]), (4, bt["amount"]), (5, bt["returns"]), (6, bt["count"])]:
+            ws.cell(row=row_idx, column=col, value=val)
         for col in range(1, 7):
             ws.cell(row=row_idx, column=col).fill = subtotal_fill
             ws.cell(row=row_idx, column=col).font = Font(bold=True)
@@ -680,62 +538,36 @@ def create_foodics_summary_by_branch(df):
         row_idx += 1
 
     row_idx += 1
-    grand_net = summary["Net Amount"].sum()
-    grand_amount = summary["Amount"].sum()
-    grand_returns = summary["Return Amount"].sum()
-    grand_count = summary["Count"].sum()
-
-    ws.cell(row=row_idx, column=2, value="GRAND TOTAL")
-    ws.cell(row=row_idx, column=3, value=grand_net)
-    ws.cell(row=row_idx, column=4, value=grand_amount)
-    ws.cell(row=row_idx, column=5, value=grand_returns)
-    ws.cell(row=row_idx, column=6, value=grand_count)
-
-    for col in range(1, 7):
-        ws.cell(row=row_idx, column=col).fill = total_fill
-        ws.cell(row=row_idx, column=col).font = Font(bold=True, size=12)
+    for col, val in [(2, "GRAND TOTAL"), (3, summary["Net Amount"].sum()), (4, summary["Amount"].sum()),
+                     (5, summary["Return Amount"].sum()), (6, summary["Count"].sum())]:
+        cell = ws.cell(row=row_idx, column=col, value=val)
+        cell.fill = total_fill; cell.font = Font(bold=True, size=12)
         if col >= 3:
-            ws.cell(row=row_idx, column=col).number_format = "#,##0.00"
+            cell.number_format = "#,##0.00"
 
-    ws.column_dimensions["A"].width = 15
-    ws.column_dimensions["B"].width = 25
-    ws.column_dimensions["C"].width = 15
-    ws.column_dimensions["D"].width = 15
-    ws.column_dimensions["E"].width = 15
-    ws.column_dimensions["F"].width = 12
+    for ltr, w in zip("ABCDEF", [15, 25, 15, 15, 15, 12]):
+        ws.column_dimensions[ltr].width = w
 
-    buffer = io.BytesIO()
-    wb.save(buffer)
-    buffer.seek(0)
-    return buffer, summary, len(summary["Branch"].unique())
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    return buf, summary, len(summary["Branch"].unique())
 
 
 def create_foodics_summary_by_payment_method(df):
-    """Create Foodics summary grouped by Payment Method across all branches"""
     summary = df.groupby(["Payment Method"]).agg({
-        "Net Amount": "sum",
-        "Amount": "sum",
-        "Return Amount": "sum",
-        "Count": "sum"
-    }).reset_index()
-
-    summary = summary.sort_values("Net Amount", ascending=False)
+        "Net Amount": "sum", "Amount": "sum", "Return Amount": "sum", "Count": "sum"
+    }).reset_index().sort_values("Net Amount", ascending=False)
 
     wb = Workbook()
     ws = wb.active
     ws.title = "Summary_by_Payment"
 
     header_fill = PatternFill(start_color="2E7D32", end_color="2E7D32", fill_type="solid")
-    header_font = Font(color="FFFFFF", bold=True, size=11)
     total_fill = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
-    center_align = Alignment(horizontal="center", vertical="center")
+    center = Alignment(horizontal="center", vertical="center")
 
-    headers = ["Payment Method", "Net Amount", "Amount", "Returns", "Count"]
-    for col, header in enumerate(headers, 1):
+    for col, header in enumerate(["Payment Method", "Net Amount", "Amount", "Returns", "Count"], 1):
         cell = ws.cell(row=1, column=col, value=header)
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = center_align
+        cell.fill = header_fill; cell.font = Font(color="FFFFFF", bold=True, size=11); cell.alignment = center
 
     row_idx = 2
     for _, data in summary.iterrows():
@@ -749,44 +581,275 @@ def create_foodics_summary_by_payment_method(df):
         row_idx += 1
 
     row_idx += 1
-    ws.cell(row=row_idx, column=1, value="GRAND TOTAL")
-    ws.cell(row=row_idx, column=2, value=summary["Net Amount"].sum())
-    ws.cell(row=row_idx, column=3, value=summary["Amount"].sum())
-    ws.cell(row=row_idx, column=4, value=summary["Return Amount"].sum())
-    ws.cell(row=row_idx, column=5, value=summary["Count"].sum())
-
-    for col in range(1, 6):
-        ws.cell(row=row_idx, column=col).fill = total_fill
-        ws.cell(row=row_idx, column=col).font = Font(bold=True, size=12)
+    for col, val in [(1, "GRAND TOTAL"), (2, summary["Net Amount"].sum()), (3, summary["Amount"].sum()),
+                     (4, summary["Return Amount"].sum()), (5, summary["Count"].sum())]:
+        cell = ws.cell(row=row_idx, column=col, value=val)
+        cell.fill = total_fill; cell.font = Font(bold=True, size=12)
         if col >= 2:
-            ws.cell(row=row_idx, column=col).number_format = "#,##0.00"
+            cell.number_format = "#,##0.00"
+
+    for ltr, w in zip("ABCDE", [30, 15, 15, 15, 12]):
+        ws.column_dimensions[ltr].width = w
+
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    return buf, summary
+
+
+def create_foodics_detailed_by_branch(df):
+    """
+    Pivot: rows = Payment Methods, columns = Branches.
+    Each branch group has 4 sub-columns: Net Amount / Amount / Returns / Count.
+    Mirrors Geidea detailed style. Includes TOTAL and AVG rows.
+    """
+    summary = df.groupby(["Payment Method", "Branch"]).agg({
+        "Net Amount": "sum", "Amount": "sum", "Return Amount": "sum", "Count": "sum"
+    }).reset_index()
+
+    payment_methods = sorted(summary["Payment Method"].unique())
+    branches = sorted(summary["Branch"].unique())
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Detailed_by_Branch"
+
+    header_fill = PatternFill(start_color="2E7D32", end_color="2E7D32", fill_type="solid")
+    sub_fill = PatternFill(start_color="A5D6A7", end_color="A5D6A7", fill_type="solid")
+    total_fill = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
+    avg_fill = PatternFill(start_color="E0E0E0", end_color="E0E0E0", fill_type="solid")
+    center = Alignment(horizontal="center", vertical="center")
+
+    # Row 1 headers
+    ws.cell(row=1, column=1, value="Payment Method")
+    ws.cell(row=1, column=1).fill = header_fill
+    ws.cell(row=1, column=1).font = Font(color="FFFFFF", bold=True, size=10)
+    ws.cell(row=1, column=1).alignment = center
+
+    col_idx = 2
+    for branch in branches:
+        ws.cell(row=1, column=col_idx, value=branch)
+        ws.cell(row=1, column=col_idx).fill = header_fill
+        ws.cell(row=1, column=col_idx).font = Font(color="FFFFFF", bold=True, size=9)
+        ws.cell(row=1, column=col_idx).alignment = center
+        ws.merge_cells(start_row=1, start_column=col_idx, end_row=1, end_column=col_idx + 3)
+        for lbl, off in [("Net Amount", 0), ("Amount", 1), ("Returns", 2), ("Count", 3)]:
+            c2 = ws.cell(row=2, column=col_idx + off, value=lbl)
+            c2.fill = sub_fill; c2.font = Font(bold=True, size=8); c2.alignment = center
+        col_idx += 4
+
+    # TOTAL column group
+    ws.cell(row=1, column=col_idx, value="TOTAL")
+    ws.cell(row=1, column=col_idx).fill = total_fill
+    ws.cell(row=1, column=col_idx).font = Font(bold=True, size=10)
+    ws.cell(row=1, column=col_idx).alignment = center
+    ws.merge_cells(start_row=1, start_column=col_idx, end_row=1, end_column=col_idx + 3)
+    for lbl, off in [("Net Amount", 0), ("Amount", 1), ("Returns", 2), ("Count", 3)]:
+        c2 = ws.cell(row=2, column=col_idx + off, value=lbl)
+        c2.fill = total_fill; c2.font = Font(bold=True, size=8); c2.alignment = center
+    total_col_start = col_idx
+    col_idx += 4
+
+    # Data rows
+    row_idx = 3
+    for pm in payment_methods:
+        ws.cell(row=row_idx, column=1, value=pm)
+        pm_data = summary[summary["Payment Method"] == pm]
+
+        c = 2
+        row_net = row_amt = row_ret = row_cnt = 0
+        for branch in branches:
+            bd = pm_data[pm_data["Branch"] == branch]
+            net = bd["Net Amount"].values[0] if not bd.empty else 0
+            amt = bd["Amount"].values[0] if not bd.empty else 0
+            ret = bd["Return Amount"].values[0] if not bd.empty else 0
+            cnt = int(bd["Count"].values[0]) if not bd.empty else 0
+            for off, val in enumerate([net, amt, ret, cnt]):
+                cell = ws.cell(row=row_idx, column=c + off, value=val)
+                cell.number_format = "#,##0.00" if off < 3 else "#,##0"
+            row_net += net; row_amt += amt; row_ret += ret; row_cnt += cnt
+            c += 4
+
+        for off, val in enumerate([row_net, row_amt, row_ret, row_cnt]):
+            cell = ws.cell(row=row_idx, column=total_col_start + off, value=val)
+            cell.number_format = "#,##0.00" if off < 3 else "#,##0"
+            cell.font = Font(bold=True)
+        row_idx += 1
+
+    # TOTAL row
+    row_idx += 1
+    ws.cell(row=row_idx, column=1, value="TOTAL")
+    ws.cell(row=row_idx, column=1).fill = total_fill
+    ws.cell(row=row_idx, column=1).font = Font(bold=True, size=11)
+    c = 2
+    for branch in branches:
+        bd = summary[summary["Branch"] == branch]
+        for off, col_name in enumerate(["Net Amount", "Amount", "Return Amount", "Count"]):
+            cell = ws.cell(row=row_idx, column=c + off, value=bd[col_name].sum())
+            cell.fill = total_fill; cell.font = Font(bold=True)
+            cell.number_format = "#,##0.00" if off < 3 else "#,##0"
+        c += 4
+    for off, col_name in enumerate(["Net Amount", "Amount", "Return Amount", "Count"]):
+        cell = ws.cell(row=row_idx, column=total_col_start + off, value=summary[col_name].sum())
+        cell.fill = total_fill; cell.font = Font(bold=True, size=11)
+        cell.number_format = "#,##0.00" if off < 3 else "#,##0"
+
+    # AVG row
+    row_idx += 1
+    ws.cell(row=row_idx, column=1, value="AVG")
+    ws.cell(row=row_idx, column=1).fill = avg_fill
+    ws.cell(row=row_idx, column=1).font = Font(bold=True, size=11)
+    c = 2
+    for branch in branches:
+        bd = summary[summary["Branch"] == branch]
+        for off, col_name in enumerate(["Net Amount", "Amount", "Return Amount", "Count"]):
+            val = round(bd[col_name].mean(), 2) if not bd.empty else 0
+            cell = ws.cell(row=row_idx, column=c + off, value=val)
+            cell.fill = avg_fill; cell.font = Font(bold=True)
+            cell.number_format = "#,##0.00" if off < 3 else "#,##0"
+        c += 4
+    for off, col_name in enumerate(["Net Amount", "Amount", "Return Amount", "Count"]):
+        cell = ws.cell(row=row_idx, column=total_col_start + off, value=round(summary[col_name].mean(), 2))
+        cell.fill = avg_fill; cell.font = Font(bold=True)
+        cell.number_format = "#,##0.00" if off < 3 else "#,##0"
 
     ws.column_dimensions["A"].width = 30
-    ws.column_dimensions["B"].width = 15
-    ws.column_dimensions["C"].width = 15
-    ws.column_dimensions["D"].width = 15
-    ws.column_dimensions["E"].width = 12
+    for i in range(2, col_idx):
+        ws.column_dimensions[get_column_letter(i)].width = 13
 
-    buffer = io.BytesIO()
-    wb.save(buffer)
-    buffer.seek(0)
-    return buffer, summary
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    return buf, len(branches), len(payment_methods)
+
+
+def create_foodics_detailed_by_payment_method(df):
+    """
+    Pivot: rows = Branches, columns = Payment Methods.
+    Each payment method group has 4 sub-columns: Net Amount / Amount / Returns / Count.
+    Mirrors Geidea detailed style. Includes TOTAL and AVG rows.
+    """
+    summary = df.groupby(["Branch", "Payment Method"]).agg({
+        "Net Amount": "sum", "Amount": "sum", "Return Amount": "sum", "Count": "sum"
+    }).reset_index()
+
+    branches = sorted(summary["Branch"].unique())
+    payment_methods = sorted(summary["Payment Method"].unique())
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Detailed_by_PayMethod"
+
+    header_fill = PatternFill(start_color="1565C0", end_color="1565C0", fill_type="solid")
+    sub_fill = PatternFill(start_color="90CAF9", end_color="90CAF9", fill_type="solid")
+    total_fill = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
+    avg_fill = PatternFill(start_color="E0E0E0", end_color="E0E0E0", fill_type="solid")
+    center = Alignment(horizontal="center", vertical="center")
+
+    # Row 1 headers
+    ws.cell(row=1, column=1, value="Branch")
+    ws.cell(row=1, column=1).fill = header_fill
+    ws.cell(row=1, column=1).font = Font(color="FFFFFF", bold=True, size=10)
+    ws.cell(row=1, column=1).alignment = center
+
+    col_idx = 2
+    for pm in payment_methods:
+        ws.cell(row=1, column=col_idx, value=pm)
+        ws.cell(row=1, column=col_idx).fill = header_fill
+        ws.cell(row=1, column=col_idx).font = Font(color="FFFFFF", bold=True, size=9)
+        ws.cell(row=1, column=col_idx).alignment = center
+        ws.merge_cells(start_row=1, start_column=col_idx, end_row=1, end_column=col_idx + 3)
+        for lbl, off in [("Net Amount", 0), ("Amount", 1), ("Returns", 2), ("Count", 3)]:
+            c2 = ws.cell(row=2, column=col_idx + off, value=lbl)
+            c2.fill = sub_fill; c2.font = Font(bold=True, size=8); c2.alignment = center
+        col_idx += 4
+
+    # TOTAL column group
+    ws.cell(row=1, column=col_idx, value="TOTAL")
+    ws.cell(row=1, column=col_idx).fill = total_fill
+    ws.cell(row=1, column=col_idx).font = Font(bold=True, size=10)
+    ws.cell(row=1, column=col_idx).alignment = center
+    ws.merge_cells(start_row=1, start_column=col_idx, end_row=1, end_column=col_idx + 3)
+    for lbl, off in [("Net Amount", 0), ("Amount", 1), ("Returns", 2), ("Count", 3)]:
+        c2 = ws.cell(row=2, column=col_idx + off, value=lbl)
+        c2.fill = total_fill; c2.font = Font(bold=True, size=8); c2.alignment = center
+    total_col_start = col_idx
+    col_idx += 4
+
+    # Data rows
+    row_idx = 3
+    for branch in branches:
+        ws.cell(row=row_idx, column=1, value=branch)
+        branch_data = summary[summary["Branch"] == branch]
+
+        c = 2
+        row_net = row_amt = row_ret = row_cnt = 0
+        for pm in payment_methods:
+            pd_ = branch_data[branch_data["Payment Method"] == pm]
+            net = pd_["Net Amount"].values[0] if not pd_.empty else 0
+            amt = pd_["Amount"].values[0] if not pd_.empty else 0
+            ret = pd_["Return Amount"].values[0] if not pd_.empty else 0
+            cnt = int(pd_["Count"].values[0]) if not pd_.empty else 0
+            for off, val in enumerate([net, amt, ret, cnt]):
+                cell = ws.cell(row=row_idx, column=c + off, value=val)
+                cell.number_format = "#,##0.00" if off < 3 else "#,##0"
+            row_net += net; row_amt += amt; row_ret += ret; row_cnt += cnt
+            c += 4
+
+        for off, val in enumerate([row_net, row_amt, row_ret, row_cnt]):
+            cell = ws.cell(row=row_idx, column=total_col_start + off, value=val)
+            cell.number_format = "#,##0.00" if off < 3 else "#,##0"
+            cell.font = Font(bold=True)
+        row_idx += 1
+
+    # TOTAL row
+    row_idx += 1
+    ws.cell(row=row_idx, column=1, value="TOTAL")
+    ws.cell(row=row_idx, column=1).fill = total_fill
+    ws.cell(row=row_idx, column=1).font = Font(bold=True, size=11)
+    c = 2
+    for pm in payment_methods:
+        pd_ = summary[summary["Payment Method"] == pm]
+        for off, col_name in enumerate(["Net Amount", "Amount", "Return Amount", "Count"]):
+            cell = ws.cell(row=row_idx, column=c + off, value=pd_[col_name].sum())
+            cell.fill = total_fill; cell.font = Font(bold=True)
+            cell.number_format = "#,##0.00" if off < 3 else "#,##0"
+        c += 4
+    for off, col_name in enumerate(["Net Amount", "Amount", "Return Amount", "Count"]):
+        cell = ws.cell(row=row_idx, column=total_col_start + off, value=summary[col_name].sum())
+        cell.fill = total_fill; cell.font = Font(bold=True, size=11)
+        cell.number_format = "#,##0.00" if off < 3 else "#,##0"
+
+    # AVG row
+    row_idx += 1
+    ws.cell(row=row_idx, column=1, value="AVG")
+    ws.cell(row=row_idx, column=1).fill = avg_fill
+    ws.cell(row=row_idx, column=1).font = Font(bold=True, size=11)
+    c = 2
+    for pm in payment_methods:
+        pd_ = summary[summary["Payment Method"] == pm]
+        for off, col_name in enumerate(["Net Amount", "Amount", "Return Amount", "Count"]):
+            val = round(pd_[col_name].mean(), 2) if not pd_.empty else 0
+            cell = ws.cell(row=row_idx, column=c + off, value=val)
+            cell.fill = avg_fill; cell.font = Font(bold=True)
+            cell.number_format = "#,##0.00" if off < 3 else "#,##0"
+        c += 4
+    for off, col_name in enumerate(["Net Amount", "Amount", "Return Amount", "Count"]):
+        cell = ws.cell(row=row_idx, column=total_col_start + off, value=round(summary[col_name].mean(), 2))
+        cell.fill = avg_fill; cell.font = Font(bold=True)
+        cell.number_format = "#,##0.00" if off < 3 else "#,##0"
+
+    ws.column_dimensions["A"].width = 15
+    for i in range(2, col_idx):
+        ws.column_dimensions[get_column_letter(i)].width = 13
+
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    return buf, len(payment_methods), len(branches)
 
 
 def create_foodics_daily_avg_report(df, dates):
-    """Create Foodics daily average report by Payment Method"""
     if not dates:
         return None, None, 0
-
     num_days = len(dates)
-
     summary = df.groupby(["Payment Method"]).agg({
-        "Net Amount": "sum",
-        "Amount": "sum",
-        "Return Amount": "sum",
-        "Count": "sum"
+        "Net Amount": "sum", "Amount": "sum", "Return Amount": "sum", "Count": "sum"
     }).reset_index()
-
     summary["Avg Net Amount/Day"] = summary["Net Amount"] / num_days
     summary["Avg Count/Day"] = summary["Count"] / num_days
     summary = summary.sort_values("Avg Net Amount/Day", ascending=False)
@@ -796,21 +859,18 @@ def create_foodics_daily_avg_report(df, dates):
     ws.title = "Daily_Averages"
 
     header_fill = PatternFill(start_color="2E7D32", end_color="2E7D32", fill_type="solid")
-    header_font = Font(color="FFFFFF", bold=True, size=11)
     avg_fill = PatternFill(start_color="E8F5E9", end_color="E8F5E9", fill_type="solid")
     total_fill = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
-    center_align = Alignment(horizontal="center", vertical="center")
+    center = Alignment(horizontal="center", vertical="center")
 
     ws.cell(row=1, column=1, value=f"Report Period: {dates[0]} to {dates[-1]} ({num_days} days)")
     ws.cell(row=1, column=1).font = Font(bold=True, size=12)
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=7)
 
-    headers = ["Payment Method", "Total Net Amount", "Daily Avg Net", "Total Count", "Daily Avg Count", "Total Returns", "Days"]
-    for col, header in enumerate(headers, 1):
+    for col, header in enumerate(["Payment Method", "Total Net Amount", "Daily Avg Net",
+                                   "Total Count", "Daily Avg Count", "Total Returns", "Days"], 1):
         cell = ws.cell(row=2, column=col, value=header)
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = center_align
+        cell.fill = header_fill; cell.font = Font(color="FFFFFF", bold=True, size=11); cell.alignment = center
 
     row_idx = 3
     for _, data in summary.iterrows():
@@ -821,41 +881,26 @@ def create_foodics_daily_avg_report(df, dates):
         ws.cell(row=row_idx, column=5, value=data["Avg Count/Day"])
         ws.cell(row=row_idx, column=6, value=data["Return Amount"])
         ws.cell(row=row_idx, column=7, value=num_days)
-
         ws.cell(row=row_idx, column=3).fill = avg_fill
         ws.cell(row=row_idx, column=5).fill = avg_fill
-
         for col in range(2, 7):
             ws.cell(row=row_idx, column=col).number_format = "#,##0.00" if col != 4 else "#,##0"
         row_idx += 1
 
     row_idx += 1
-    ws.cell(row=row_idx, column=1, value="GRAND TOTAL")
-    ws.cell(row=row_idx, column=2, value=summary["Net Amount"].sum())
-    ws.cell(row=row_idx, column=3, value=summary["Net Amount"].sum() / num_days)
-    ws.cell(row=row_idx, column=4, value=summary["Count"].sum())
-    ws.cell(row=row_idx, column=5, value=summary["Count"].sum() / num_days)
-    ws.cell(row=row_idx, column=6, value=summary["Return Amount"].sum())
-    ws.cell(row=row_idx, column=7, value=num_days)
-
-    for col in range(1, 8):
-        ws.cell(row=row_idx, column=col).fill = total_fill
-        ws.cell(row=row_idx, column=col).font = Font(bold=True, size=12)
+    for col, val in [(1, "GRAND TOTAL"), (2, summary["Net Amount"].sum()),
+                     (3, summary["Net Amount"].sum() / num_days), (4, summary["Count"].sum()),
+                     (5, summary["Count"].sum() / num_days), (6, summary["Return Amount"].sum()), (7, num_days)]:
+        cell = ws.cell(row=row_idx, column=col, value=val)
+        cell.fill = total_fill; cell.font = Font(bold=True, size=12)
         if col >= 2 and col != 4:
-            ws.cell(row=row_idx, column=col).number_format = "#,##0.00"
+            cell.number_format = "#,##0.00"
 
-    ws.column_dimensions["A"].width = 30
-    ws.column_dimensions["B"].width = 18
-    ws.column_dimensions["C"].width = 18
-    ws.column_dimensions["D"].width = 15
-    ws.column_dimensions["E"].width = 18
-    ws.column_dimensions["F"].width = 15
-    ws.column_dimensions["G"].width = 10
+    for ltr, w in zip("ABCDEFG", [30, 18, 18, 15, 18, 15, 10]):
+        ws.column_dimensions[ltr].width = w
 
-    buffer = io.BytesIO()
-    wb.save(buffer)
-    buffer.seek(0)
-    return buffer, summary, num_days
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    return buf, summary, num_days
 
 
 # ==================== UI ====================
@@ -873,6 +918,7 @@ if uploaded_file:
         df_raw = read_uploaded_file(uploaded_file)
         file_type = detect_file_type(df_raw)
 
+        # ── GEIDEA ──────────────────────────────────────────────────────────────
         if file_type == "geidea":
             st.success(f"✅ Detected **Geidea** file: {uploaded_file.name} ({len(df_raw)} rows)")
 
@@ -888,11 +934,10 @@ if uploaded_file:
                 has_multiple_dates = len(unique_dates) > 1
 
                 if has_multiple_dates:
-                    summary_date_buffer, summary_date_df, num_dates = create_geidea_summary_by_date_file(df_processed)
-                    date_buffer, num_dates_detailed, num_terminals_date = create_geidea_detailed_by_date_file(df_processed)
+                    summary_date_buffer, _, num_dates = create_geidea_summary_by_date_file(df_processed)
+                    date_buffer, _, _ = create_geidea_detailed_by_date_file(df_processed)
                 else:
-                    summary_date_buffer = None
-                    date_buffer = None
+                    summary_date_buffer = date_buffer = None
                     num_dates = 0
 
             st.subheader("📊 Geidea Summary Preview")
@@ -903,75 +948,54 @@ if uploaded_file:
 
             if has_multiple_dates:
                 st.info(f"📅 Detected {num_dates} reconciliation dates: {', '.join([d.strftime('%Y-%m-%d') for d in unique_dates])}")
-
             if "Unknown Bank" in summary_df["Bank Name"].values:
                 st.warning("⚠️ Some terminals not found in mapping (shown in red)")
 
             st.dataframe(
                 summary_df.style.format({"Total": "{:,.2f}"})
-                .apply(lambda x: ["background-color: #FF6B6B; color: white"] * 3 if x["Bank Name"] == "Unknown Bank" else [""] * 3, axis=1),
-                use_container_width=True,
-                height=300
+                .apply(lambda x: ["background-color: #FF6B6B; color: white"] * 3
+                       if x["Bank Name"] == "Unknown Bank" else [""] * 3, axis=1),
+                use_container_width=True, height=300
             )
 
             st.subheader("⬇️ Geidea: Download Reports")
-
             if has_multiple_dates:
-                st.markdown("**Four Geidea reports generated with multi-date support:**")
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.download_button(
-                        label="📊 Geidea: Summary Totals Only\n\nConsolidated totals by Bank and Card Scheme across all dates",
-                        data=summary_buffer,
+                st.markdown("**4 reports — multi-date support:**")
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.download_button("📊 Summary Totals Only", data=summary_buffer,
                         file_name="Geidea_01_SUMMARY_Totals_Only.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
-                    )
-                    st.download_button(
-                        label="📋 Geidea: Detailed All Terminals\n\nAll terminals as columns with Debit/Credit/Total breakdown",
-                        data=detailed_buffer,
-                        file_name=f"Geidea_02_DETAILED_All_Terminals_{num_terminals}_columns.xlsx",
+                        use_container_width=True)
+                    st.download_button("📋 Detailed All Terminals", data=detailed_buffer,
+                        file_name=f"Geidea_02_DETAILED_All_Terminals_{num_terminals}_cols.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
-                    )
-                with col2:
-                    st.download_button(
-                        label="📅 Geidea: Summary by Date\n\nTotals grouped by Reconciliation Date with daily subtotals",
-                        data=summary_date_buffer,
+                        use_container_width=True)
+                with c2:
+                    st.download_button("📅 Summary by Date", data=summary_date_buffer,
                         file_name=f"Geidea_03_SUMMARY_by_Date_{num_dates}_dates.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
-                    )
-                    st.download_button(
-                        label="📆 Geidea: Detailed by Date\n\nTerminal breakdown grouped by each Reconciliation Date",
-                        data=date_buffer,
+                        use_container_width=True)
+                    st.download_button("📆 Detailed by Date", data=date_buffer,
                         file_name=f"Geidea_04_DETAILED_by_Date_{num_dates}_dates.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
-                    )
+                        use_container_width=True)
                 st.success(f"✅ All 4 Geidea reports ready! ({num_dates} dates × {num_terminals} terminals)")
-
             else:
-                st.markdown("**Two Geidea reports generated:**")
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.download_button(
-                        label="📊 Geidea: Summary Totals Only\n\nConsolidated totals by Bank and Card Scheme",
-                        data=summary_buffer,
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.download_button("📊 Summary Totals Only", data=summary_buffer,
                         file_name="Geidea_01_SUMMARY_Totals_Only.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
-                    )
-                with col2:
-                    st.download_button(
-                        label="📋 Geidea: Detailed All Terminals\n\nAll terminals as columns with Debit/Credit/Total breakdown",
-                        data=detailed_buffer,
-                        file_name=f"Geidea_02_DETAILED_All_Terminals_{num_terminals}_columns.xlsx",
+                        use_container_width=True)
+                with c2:
+                    st.download_button("📋 Detailed All Terminals", data=detailed_buffer,
+                        file_name=f"Geidea_02_DETAILED_All_Terminals_{num_terminals}_cols.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
-                    )
+                        use_container_width=True)
                 st.success(f"✅ Both Geidea reports ready! ({num_terminals} terminal columns)")
 
+        # ── FOODICS ─────────────────────────────────────────────────────────────
         elif file_type == "foodics":
             st.success(f"✅ Detected **Foodics** Payments Report: {uploaded_file.name}")
 
@@ -983,9 +1007,11 @@ if uploaded_file:
 
                 branch_buffer, branch_summary, num_branches = create_foodics_summary_by_branch(df_processed)
                 payment_buffer, payment_summary = create_foodics_summary_by_payment_method(df_processed)
+                det_branch_buffer, num_br_det, num_pm_det = create_foodics_detailed_by_branch(df_processed)
+                det_pm_buffer, num_pm_cols, num_br_rows = create_foodics_detailed_by_payment_method(df_processed)
 
                 if dates:
-                    avg_buffer, avg_summary, num_days = create_foodics_daily_avg_report(df_processed, dates)
+                    avg_buffer, _, num_days = create_foodics_daily_avg_report(df_processed, dates)
                 else:
                     avg_buffer = None
                     num_days = 0
@@ -999,65 +1025,74 @@ if uploaded_file:
             if dates:
                 st.info(f"📅 Report period: {dates[0]} to {dates[-1]} ({num_days} days)")
             else:
-                st.info("ℹ️ No date range metadata found — daily averages report not available for plain CSV uploads.")
+                st.info("ℹ️ No date range metadata — daily averages report not available for plain CSV uploads.")
 
             st.dataframe(
                 payment_summary.style.format({
-                    "Net Amount": "{:,.2f}",
-                    "Amount": "{:,.2f}",
-                    "Return Amount": "{:,.2f}",
-                    "Count": "{:,.0f}"
+                    "Net Amount": "{:,.2f}", "Amount": "{:,.2f}",
+                    "Return Amount": "{:,.2f}", "Count": "{:,.0f}"
                 }),
-                use_container_width=True,
-                height=300
+                use_container_width=True, height=300
             )
 
             st.subheader("⬇️ Foodics: Download Reports")
+            total_reports = 5 if dates else 4
+            st.markdown(f"**{total_reports} Foodics reports generated:**")
 
-            if dates:
-                st.markdown("**Three Foodics reports generated:**")
-            else:
-                st.markdown("**Two Foodics reports generated** (daily averages require date range metadata):")
-
-            col1, col2 = st.columns(2)
-            with col1:
+            c1, c2 = st.columns(2)
+            with c1:
                 st.download_button(
-                    label="🏪 Foodics: Summary by Branch\n\nNet Amount grouped by Branch and Payment Method with subtotals",
+                    "🏪 Summary by Branch\n\nPayment methods grouped under each branch with subtotals",
                     data=branch_buffer,
                     file_name=f"Foodics_01_SUMMARY_by_Branch_{num_branches}_branches.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
+                st.download_button(
+                    "📋 Detailed by Branch\n\nPivot: Payment Methods as rows → Branches as column groups (Net/Amount/Returns/Count)",
+                    data=det_branch_buffer,
+                    file_name=f"Foodics_03_DETAILED_by_Branch_{num_br_det}_branches.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
                 if dates:
                     st.download_button(
-                        label="📈 Foodics: Daily Averages\n\nAverage Net Amount and Count per day by Payment Method",
+                        "📈 Daily Averages\n\nAverage Net Amount and Count per day by Payment Method",
                         data=avg_buffer,
-                        file_name=f"Foodics_03_Daily_Averages_{num_days}_days.xlsx",
+                        file_name=f"Foodics_05_Daily_Averages_{num_days}_days.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True
                     )
-            with col2:
+            with c2:
                 st.download_button(
-                    label="💳 Foodics: Summary by Payment Method\n\nConsolidated totals across all branches by Payment Type",
+                    "💳 Summary by Payment Method\n\nConsolidated totals across all branches by Payment Type",
                     data=payment_buffer,
                     file_name="Foodics_02_SUMMARY_by_Payment_Method.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
+                st.download_button(
+                    "📊 Detailed by Payment Method\n\nPivot: Branches as rows → Payment Methods as column groups (Net/Amount/Returns/Count)",
+                    data=det_pm_buffer,
+                    file_name=f"Foodics_04_DETAILED_by_PayMethod_{num_pm_cols}_methods.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
 
             if dates:
-                st.success(f"✅ All 3 Foodics reports ready! ({num_branches} branches, {num_days} days)")
+                st.success(f"✅ All 5 Foodics reports ready! ({num_branches} branches · {payment_summary['Payment Method'].nunique()} payment methods)")
             else:
-                st.success(f"✅ 2 Foodics reports ready! ({num_branches} branches)")
+                st.success(f"✅ 4 Foodics reports ready! ({num_branches} branches · {payment_summary['Payment Method'].nunique()} payment methods)")
 
+        # ── UNKNOWN ──────────────────────────────────────────────────────────────
         else:
-            st.error("❌ Could not detect file type. Please ensure your file matches Geidea or Foodics format.")
-            st.info("**Geidea:** Should have 'Terminal', 'Card Name' columns")
-            st.info("**Foodics:** Should have 'Payment Method', 'Branch' columns")
+            st.error("❌ Could not detect file type.")
+            st.info("**Geidea:** File must have 'Terminal' and 'Card Name' columns")
+            st.info("**Foodics:** File must have 'Payment Method' and 'Branch' columns")
 
     except Exception as e:
         st.error(f"❌ Error processing file: {str(e)}")
         st.info("Please check your file format and try again.")
 
 st.markdown("---")
-st.caption("Geidea & Foodics Summary Generator v5.3 | Clean CSV + Wrapped Excel Support")
+st.caption("Geidea & Foodics Summary Generator v5.4 | 4 Geidea reports + 5 Foodics reports")

@@ -1082,6 +1082,133 @@ def create_foodics_daily_avg_report(df, dates):
     return buf, summary, num_days
 
 
+# ==================== GOOGLE SHEETS PUSH ====================
+
+SHEET_ID = "1m8beFoYLJAudtKp-aTAwM-spxekgQZTGJwUJjoJE1gU"
+
+
+SERVICE_ACCOUNT_INFO = {
+    "type": "service_account",
+    "project_id": "python-scripts-463823",
+    "private_key_id": "6b7ae7beeaae6a31e655233a34f89e2a81293549",
+    "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDLtHiNxJ53k36V\nUiOPQbAp6/TA4bLnuRfypMty/H8JZwznTZvtC8S4EaRrLApyt89azFpPwRcSN7gp\nXKsoOkeHry9vpgKDALtSn7BhWUteLx2WA3ajKzI2b/JouhMAB0emA1f7ZdeI5Yc+\neygmvgkOBLN575okgMv0MD6/de6dUDsDWlXJgPudT/3KPTDM3ht2CRj9rs6lbBbw\nWn4rYXI7kW5/3VMqW08JBnM/uRZ3tgOIbN0nMpwoZfWg3y3GBc2OLMjnsUtzBANZ\nZPPK1jDHbjYq1BffkLt3FfSV9pSxvhVmkCCBrPT/M/xEgZN1pku25Eyd59Cjbhi/\nobfQtv6ZAgMBAAECggEAWafeMWNa7b0shvMGdJxQOTtBV41ezQ9Ro3l1k+/ex9gj\nvUASwzOdSvh02biiBpiw+kEb9KNDEMEWXJoNOODhr63inmy+CUOOrtBa9JW1DsiE\n6IwwsKMn7/64ffB7wVTy63XoSN0rjnSbYFwbMWYNnS5jgeT7flpzqc98Jo90zKaE\nqPw2s4RkJLX8ymxFPVXiK9QBb/xxRjVbJnMY6xfOmnBm9Jx3pBb2KNewLGs/Cc26\nJtA2m6Hl7iOvMvTDTCKZCscVlR2pS/dyQX4+hrwQ/0dD/j6bZMKYQXoBiyGu0grI\nf1cZXARCvv9dxg1kVKa75EANRnSm1yNh3BL2TMNQYwKBgQDpmem9dfDC5J30ldpg\nkre710xCTKaXIEX2hmigk8od94XW0dLIL/ge19wuDwi6bqc7Y+AsOUdDQSic/oPM\ntj/xKnCkuo8q5HONq2GDLLJfYerxwOea7xyG9uCzN/9ftelun4TteDEnzn/RoElT\nWwS3EmSdzoUV6xN0lIDaPJtAIwKBgQDfPLXGfjd1oqTXzmMysRyVihDYIR9H+S1o\n8qxtaaWTlobUZjTJVsgUO4hdX8SaqsP5LYF9yZxlyQcLfo8sI8z35RXF4DN84BXG\nsoNd1ETPMmX2o/iSA7n6JVm8j+igH3Ih2litiR7xUr95vyQfXzs0gb57vgWjtEhn\nHvdu0r+UEwKBgQC3sTdTq73Ck+H95iTOEjF2/YtTC1Fov5EklXcK5oxmWjEdxut4\nTfhP0LCsa1gSula45gXu4K/AHCniomVkAeBwNU5Uyvsv4GtZeO36J5iwVqBYsLev\nZt3I57O0WpFvYu4H9lqiHgSRZ9mtLtzaNlWT3FvQmAihPrSS1QAqHMR8fwKBgFVT\nxT87m0MxicSbNLt5iy11en7CGkzOZ5cHuvSPPySskpi5AFA9BXkGUFcwdduQjhu+\nUxKbb1ZQgorYMy1x+bR/MdVSnxuKI4ixTxkcO7je0K53elmFZx7ADA7RCt+5ZUyf\nQuoB0Xv4XwvQDaSYJ+8n8IEn3sv16v7PjVAk6elVAoGBAKwOlTQc9PoDPhR0skOs\nTbr6GlSzAAgOZq+6Yf9A/ho6Oao0qwBn/chX7U4WFe1j0N7DHTJcrH5MgqSv5tGI\nQYY0IzIu2N/1uQf1cfotVRNV7hVkh1mKefUC9vrpA9SEbPPpdaXHFIWDVhOBEtJA\n606BGk8LXEsCROoU100I5xQ2\n-----END PRIVATE KEY-----\n",
+    "client_email": "invoices-writer@python-scripts-463823.iam.gserviceaccount.com",
+    "client_id": "114382450136588356580",
+    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+    "token_uri": "https://oauth2.googleapis.com/token",
+    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+    "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/invoices-writer%40python-scripts-463823.iam.gserviceaccount.com",
+    "universe_domain": "googleapis.com"
+}
+
+
+def get_gspread_client():
+    import gspread
+    from google.oauth2.service_account import Credentials
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    creds = Credentials.from_service_account_info(SERVICE_ACCOUNT_INFO, scopes=scopes)
+    return gspread.authorize(creds)
+
+
+def _flatten_geidea_simplified(df):
+    import datetime
+    today = datetime.date.today().strftime("%Y-%m-%d")
+    summary = df.groupby(["Terminal", "Bank Name", "Card Name"]).agg(
+        {"Total Debit Credit": "sum"}
+    ).reset_index()
+    terminals    = sorted(summary["Terminal"].unique())
+    banks        = sorted(summary["Bank Name"].unique(), key=lambda x: (x == "Unknown Bank", x))
+    card_schemes = sorted(summary["Card Name"].unique())
+    pivot = {}
+    for _, row in summary.iterrows():
+        pivot[(row["Bank Name"], row["Card Name"], row["Terminal"])] = row["Total Debit Credit"]
+    col_totals = {t: sum(pivot.get((b, c, t), 0) for b in banks for c in card_schemes) for t in terminals}
+    n_data_rows = sum(1 for b in banks for c in card_schemes
+                      if any((b, c, t) in pivot for t in terminals))
+    headers = ["Date", "Bank Name", "Card Scheme"]
+    for t in terminals:
+        headers += [f"#{t} Total", f"#{t} Avg."]
+    headers += ["Grand Total", "Grand Avg."]
+    rows = [headers]
+    for bank in banks:
+        for card in card_schemes:
+            if not any((bank, card, t) in pivot for t in terminals):
+                continue
+            row = [today, bank, card]
+            grand = 0.0
+            for t in terminals:
+                val = pivot.get((bank, card, t), 0)
+                avg = round(col_totals[t] / n_data_rows, 2) if n_data_rows else 0
+                row += [val, avg]
+                grand += val
+            n_terms = len(terminals)
+            row += [grand, round(grand / n_terms, 2) if n_terms else 0]
+            rows.append(row)
+    total_row = [today, "TOTAL", ""]
+    grand_total = 0.0
+    for t in terminals:
+        val = col_totals[t]
+        total_row += [val, round(val / n_data_rows, 2) if n_data_rows else 0]
+        grand_total += val
+    n_terms = len(terminals)
+    total_row += [grand_total, round(grand_total / n_terms, 2) if n_terms else 0]
+    rows.append(total_row)
+    return rows
+
+
+def _flatten_foodics_net_pivot(df, row_field, col_field):
+    import datetime
+    today = datetime.date.today().strftime("%Y-%m-%d")
+    summary = df.groupby([row_field, col_field]).agg({"Net Amount": "sum"}).reset_index()
+    row_keys = sorted(summary[row_field].unique())
+    col_keys = sorted(summary[col_field].unique())
+    pivot = {(r[row_field], r[col_field]): r["Net Amount"] for _, r in summary.iterrows()}
+    col_totals = {ck: sum(pivot.get((rk, ck), 0) for rk in row_keys) for ck in col_keys}
+    n_rows = len(row_keys); n_cols = len(col_keys)
+    headers = ["Date", row_field]
+    for ck in col_keys:
+        headers += [f"{ck} Total", f"{ck} Avg."]
+    headers += ["Grand Total", "Grand Avg."]
+    rows = [headers]
+    for rk in row_keys:
+        row = [today, rk]
+        grand = 0.0
+        for ck in col_keys:
+            val = pivot.get((rk, ck), 0)
+            col_avg = round(col_totals[ck] / n_rows, 2) if n_rows else 0
+            row += [val, col_avg]
+            grand += val
+        row += [grand, round(grand / n_cols, 2) if n_cols else 0]
+        rows.append(row)
+    total_row = [today, "TOTAL"]
+    grand_total = 0.0
+    for ck in col_keys:
+        val = col_totals[ck]
+        total_row += [val, round(val / n_rows, 2) if n_rows else 0]
+        grand_total += val
+    total_row += [grand_total, round(grand_total / n_cols, 2) if n_cols else 0]
+    rows.append(total_row)
+    return rows
+
+
+def push_rows_to_sheet(rows, tab_name):
+    try:
+        gc = get_gspread_client()
+        sh = gc.open_by_key(SHEET_ID)
+        try:
+            ws = sh.worksheet(tab_name)
+            ws.clear()
+        except Exception:
+            ws = sh.add_worksheet(title=tab_name, rows=max(len(rows) + 10, 50), cols=max(len(rows[0]) + 5, 30))
+        ws.update(rows, value_input_option="USER_ENTERED")
+        return True, f"Pushed {len(rows)-1} rows to tab '{tab_name}'"
+    except Exception as e:
+        return False, f"Google Sheets error: {str(e)}"
+
+
 # ==================== UI ====================
 
 st.title("🏦 Geidea & Foodics Summary Generator")
@@ -1158,6 +1285,31 @@ if uploaded_file:
                         file_name=f"Geidea_05_DETAILED_by_Date_{num_dates}_dates.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
             st.success(f"✅ All {n_reports} Geidea reports ready! ({num_terminals} terminals)")
+
+            # ── Add to Google Sheet ────────────────────────────────────────────
+            st.markdown("---")
+            st.subheader("📤 Add to Google Sheet")
+            st.markdown(
+                f"Push the **Simplified Detailed (Total & Avg. per Terminal)** data to "
+                f"[the tracking sheet](https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit).",
+                unsafe_allow_html=False
+            )
+            import datetime as _dt
+            default_tab_g = f"Geidea_{_dt.date.today().strftime('%Y-%m-%d')}"
+            tab_name_g = st.text_input("Sheet tab name", value=default_tab_g, key="geidea_tab")
+            sheet_pwd_g = st.text_input("🔑 Password to push", type="password", key="geidea_pwd")
+            if st.button("📤 Push Geidea Simplified to Sheet", key="geidea_push", type="primary", use_container_width=True):
+                if sheet_pwd_g != "admin1234":
+                    st.error("❌ Wrong password — push not allowed.")
+                else:
+                    with st.spinner("Connecting to Google Sheets..."):
+                        rows_g = _flatten_geidea_simplified(df_processed)
+                        ok, msg = push_rows_to_sheet(rows_g, tab_name_g)
+                    if ok:
+                        st.success(f"✅ {msg}")
+                        st.markdown(f"[🔗 Open Google Sheet](https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit)")
+                    else:
+                        st.error(msg)
 
         # ── FOODICS ─────────────────────────────────────────────────────────────
         elif file_type == "foodics":
@@ -1241,6 +1393,48 @@ if uploaded_file:
 
             st.success(f"✅ {total_reports} Foodics reports ready! ({num_branches} branches · {payment_summary['Payment Method'].nunique()} payment methods)")
 
+            # ── Add to Google Sheet ────────────────────────────────────────────
+            st.markdown("---")
+            st.subheader("📤 Add to Google Sheet")
+            st.markdown(
+                f"Push the **Simplified Detailed (Net Amount [Total | Avg.])** data to "
+                f"[the tracking sheet](https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit). "
+                "Choose which pivot to push.",
+            )
+            import datetime as _dt2
+            default_date_str = _dt2.date.today().strftime("%Y-%m-%d")
+            sheet_pwd_f = st.text_input("🔑 Password to push", type="password", key="foodics_pwd")
+
+            push_col1, push_col2 = st.columns(2)
+            with push_col1:
+                tab_br = st.text_input("Tab: by Branch", value=f"Foodics_Branch_{default_date_str}", key="f_tab_br")
+                if st.button("📤 Push: Net by Branch → Sheet", key="f_push_br", type="primary", use_container_width=True):
+                    if sheet_pwd_f != "admin1234":
+                        st.error("❌ Wrong password — push not allowed.")
+                    else:
+                        with st.spinner("Pushing Branch pivot..."):
+                            rows_br = _flatten_foodics_net_pivot(df_processed, "Payment Method", "Branch")
+                            ok, msg = push_rows_to_sheet(rows_br, tab_br)
+                        if ok:
+                            st.success(f"✅ {msg}")
+                            st.markdown(f"[🔗 Open Sheet](https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit)")
+                        else:
+                            st.error(msg)
+            with push_col2:
+                tab_pm = st.text_input("Tab: by Payment Method", value=f"Foodics_PayMethod_{default_date_str}", key="f_tab_pm")
+                if st.button("📤 Push: Net by Pay Method → Sheet", key="f_push_pm", type="primary", use_container_width=True):
+                    if sheet_pwd_f != "admin1234":
+                        st.error("❌ Wrong password — push not allowed.")
+                    else:
+                        with st.spinner("Pushing Payment Method pivot..."):
+                            rows_pm = _flatten_foodics_net_pivot(df_processed, "Branch", "Payment Method")
+                            ok, msg = push_rows_to_sheet(rows_pm, tab_pm)
+                        if ok:
+                            st.success(f"✅ {msg}")
+                            st.markdown(f"[🔗 Open Sheet](https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit)")
+                        else:
+                            st.error(msg)
+
         else:
             st.error("❌ Could not detect file type.")
             st.info("**Geidea:** File must have 'Terminal' and 'Card Name' columns")
@@ -1251,4 +1445,4 @@ if uploaded_file:
         st.info("Please check your file format and try again.")
 
 st.markdown("---")
-st.caption("Geidea & Foodics Summary Generator v5.6 | Simplified reports: Terminal/Branch name → [Total | Avg.] sub-columns")
+st.caption("Geidea & Foodics Summary Generator v5.7 | Google Sheets integration · Simplified pivot [Total | Avg.] columns")

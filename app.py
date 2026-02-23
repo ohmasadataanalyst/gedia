@@ -1297,19 +1297,15 @@ if uploaded_file:
             import datetime as _dt
             default_tab_g = f"Geidea_{_dt.date.today().strftime('%Y-%m-%d')}"
             tab_name_g = st.text_input("Sheet tab name", value=default_tab_g, key="geidea_tab")
-            sheet_pwd_g = st.text_input("🔑 Password to push", type="password", key="geidea_pwd")
             if st.button("📤 Push Geidea Simplified to Sheet", key="geidea_push", type="primary", use_container_width=True):
-                if sheet_pwd_g != "admin1234":
-                    st.error("❌ Wrong password — push not allowed.")
+                with st.spinner("Connecting to Google Sheets..."):
+                    rows_g = _flatten_geidea_simplified(df_processed)
+                    ok, msg = push_rows_to_sheet(rows_g, tab_name_g)
+                if ok:
+                    st.success(f"✅ {msg}")
+                    st.markdown(f"[🔗 Open Google Sheet](https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit)")
                 else:
-                    with st.spinner("Connecting to Google Sheets..."):
-                        rows_g = _flatten_geidea_simplified(df_processed)
-                        ok, msg = push_rows_to_sheet(rows_g, tab_name_g)
-                    if ok:
-                        st.success(f"✅ {msg}")
-                        st.markdown(f"[🔗 Open Google Sheet](https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit)")
-                    else:
-                        st.error(msg)
+                    st.error(msg)
 
         # ── FOODICS ─────────────────────────────────────────────────────────────
         elif file_type == "foodics":
@@ -1403,37 +1399,29 @@ if uploaded_file:
             )
             import datetime as _dt2
             default_date_str = _dt2.date.today().strftime("%Y-%m-%d")
-            sheet_pwd_f = st.text_input("🔑 Password to push", type="password", key="foodics_pwd")
-
             push_col1, push_col2 = st.columns(2)
             with push_col1:
                 tab_br = st.text_input("Tab: by Branch", value=f"Foodics_Branch_{default_date_str}", key="f_tab_br")
                 if st.button("📤 Push: Net by Branch → Sheet", key="f_push_br", type="primary", use_container_width=True):
-                    if sheet_pwd_f != "admin1234":
-                        st.error("❌ Wrong password — push not allowed.")
+                    with st.spinner("Pushing Branch pivot..."):
+                        rows_br = _flatten_foodics_net_pivot(df_processed, "Payment Method", "Branch")
+                        ok, msg = push_rows_to_sheet(rows_br, tab_br)
+                    if ok:
+                        st.success(f"✅ {msg}")
+                        st.markdown(f"[🔗 Open Sheet](https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit)")
                     else:
-                        with st.spinner("Pushing Branch pivot..."):
-                            rows_br = _flatten_foodics_net_pivot(df_processed, "Payment Method", "Branch")
-                            ok, msg = push_rows_to_sheet(rows_br, tab_br)
-                        if ok:
-                            st.success(f"✅ {msg}")
-                            st.markdown(f"[🔗 Open Sheet](https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit)")
-                        else:
-                            st.error(msg)
+                        st.error(msg)
             with push_col2:
                 tab_pm = st.text_input("Tab: by Payment Method", value=f"Foodics_PayMethod_{default_date_str}", key="f_tab_pm")
                 if st.button("📤 Push: Net by Pay Method → Sheet", key="f_push_pm", type="primary", use_container_width=True):
-                    if sheet_pwd_f != "admin1234":
-                        st.error("❌ Wrong password — push not allowed.")
+                    with st.spinner("Pushing Payment Method pivot..."):
+                        rows_pm = _flatten_foodics_net_pivot(df_processed, "Branch", "Payment Method")
+                        ok, msg = push_rows_to_sheet(rows_pm, tab_pm)
+                    if ok:
+                        st.success(f"✅ {msg}")
+                        st.markdown(f"[🔗 Open Sheet](https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit)")
                     else:
-                        with st.spinner("Pushing Payment Method pivot..."):
-                            rows_pm = _flatten_foodics_net_pivot(df_processed, "Branch", "Payment Method")
-                            ok, msg = push_rows_to_sheet(rows_pm, tab_pm)
-                        if ok:
-                            st.success(f"✅ {msg}")
-                            st.markdown(f"[🔗 Open Sheet](https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit)")
-                        else:
-                            st.error(msg)
+                        st.error(msg)
 
         else:
             st.error("❌ Could not detect file type.")

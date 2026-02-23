@@ -1113,100 +1113,357 @@ def get_gspread_client():
     return gspread.authorize(creds)
 
 
-def _flatten_geidea_simplified(df):
-    import datetime
+
+def _get_sheet_ws(tab_name, n_rows, n_cols):
+    """Get or create worksheet, always cleared."""
+    import gspread
+    gc = get_gspread_client()
+    sh = gc.open_by_key(SHEET_ID)
+    try:
+        ws = sh.worksheet(tab_name)
+        ws.clear()
+        # resize if needed
+        if ws.row_count < n_rows + 10 or ws.col_count < n_cols + 5:
+            ws.resize(rows=n_rows + 10, cols=n_cols + 5)
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title=tab_name, rows=n_rows + 10, cols=n_cols + 5)
+    return sh, ws
+
+
+def _col_letter(n):
+    """Convert 1-based column index to A1 letter(s)."""
+    result = ""
+    while n > 0:
+        n, remainder = divmod(n - 1, 26)
+        result = chr(65 + remainder) + result
+    return result
+
+
+def _hex_to_rgb(hex_color):
+    h = hex_color.lstrip("#")
+    return {
+        "red":   int(h[0:2], 16) / 255,
+        "green": int(h[2:4], 16) / 255,
+        "blue":  int(h[4:6], 16) / 255,
+    }
+
+
+def _cell_fmt(bg_hex=None, fg_hex="000000", bold=False, font_size=10,
+              h_align="LEFT", number_fmt=None):
+    """Build a gspread-compatible cell format dict."""
+    fmt = {
+        "textFormat": {
+            "bold": bold,
+            "fontSize": font_size,
+            "foregroundColor": _hex_to_rgb(fg_hex),
+        },
+        "horizontalAlignment": h_align,
+        "verticalAlignment": "MIDDLE",
+        "wrapStrategy": "CLIP",
+    }
+    if bg_hex:
+        fmt["backgroundColor"] = _hex_to_rgb(bg_hex)
+    if number_fmt:
+        fmt["numberFormat"] = {"type": "NUMBER", "pattern": number_fmt}
+    return fmt
+
+
+def _requests_for_pivot(ws, rows_data, col_keys, row_label,
+                         header_hex, sub_hex,
+                         total_hex="FFC000", avg_hex="E0E0E0",
+                         label_col_count=1):
+    """
+    Build Sheets API batchUpdate requests to format a simplified pivot sheet.
+    Layout (0-indexed rows):
+      Row 0 : col-group headers (merged 2 cols each) + GRAND TOTAL group
+      Row 1 : Total | Avg. sub-headers
+      Row 2+ : data rows
+      Last-2 : TOTAL row
+      Last-1 : AVG row
+
+    label_col_count: how many fixed label columns before data columns (1 for Foodics, 2 for Geidea + 1 date = 3 total but date is col 0)
+    """
+    requests = []
+    sheet_id = ws.id
+
+    n_data_cols = len(col_keys)           # number of groups
+    n_pivot_cols = n_data_cols * 2 + 2   # each group=2 cols + GRAND TOTAL group=2 cols
+    total_cols = label_col_count + 1 + n_pivot_cols   # +1 for Date col (col 0)
+    # Actually: col 0 = Date, col 1..label_col_count = labels, then data
+    # We treat first_data_col as label_col_count + 1 (after Date)
+    first_data_col = label_col_count + 1   # 0-indexed
+
+    n_data_rows = len(rows_data) - 2      # exclude TOTAL and AVG rows
+    total_row_idx = 2 + n_data_rows + 1   # +1 blank gap  ... actually no blank, rows: 0=hdr1, 1=hdr2, 2..n+1=data, n+2=total, n+3=avg
+    total_row_idx = 2 + n_data_rows
+    avg_row_idx   = total_row_idx + 1
+    last_row      = avg_row_idx + 1
+
+    def fmt_req(r1, c1, r2, c2, fmt):
+        return {"repeatCell": {
+            "range": {"sheetId": sheet_id, "startRowIndex": r1, "endRowIndex": r2,
+                      "startColumnIndex": c1, "endColumnIndex": c2},
+            "cell": {"userEnteredFormat": fmt},
+            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,numberFormat,wrapStrategy)"
+        }}
+
+    def merge_req(r1, c1, r2, c2):
+        return {"mergeCells": {
+            "range": {"sheetId": sheet_id, "startRowIndex": r1, "endRowIndex": r2,
+                      "startColumnIndex": c1, "endColumnIndex": c2},
+            "mergeType": "MERGE_ALL"
+        }}
+
+    def col_width_req(c1, c2, px):
+        return {"updateDimensionProperties": {
+            "range": {"sheetId": sheet_id, "dimension": "COLUMNS",
+                      "startIndex": c1, "endIndex": c2},
+            "properties": {"pixelSize": px},
+            "fields": "pixelSize"
+        }}
+
+    def row_height_req(r1, r2, px):
+        return {"updateDimensionProperties": {
+            "range": {"sheetId": sheet_id, "dimension": "ROWS",
+                      "startIndex": r1, "endIndex": r2},
+            "properties": {"pixelSize": px},
+            "fields": "pixelSize"
+        }}
+
+    # ── Column widths ──────────────────────────────────────────────────────
+    requests.append(col_width_req(0, 1, 110))                          # Date
+    for i in range(1, label_col_count + 1):
+        requests.append(col_width_req(i, i + 1, 160))                 # label cols
+    for i in range(first_data_col, first_data_col + n_pivot_cols):
+        requests.append(col_width_req(i, i + 1, 110))                 # data cols
+
+    # ── Row heights ────────────────────────────────────────────────────────
+    requests.append(row_height_req(0, 1, 32))   # group header row
+    requests.append(row_height_req(1, 2, 24))   # sub-header row
+    requests.append(row_height_req(2, last_row, 22))  # data rows
+
+    # ── Header row 0: label cells (merge both header rows) ────────────────
+    # Date col spans rows 0-1
+    requests.append(merge_req(0, 0, 2, 1))
+    requests.append(fmt_req(0, 0, 2, 1, _cell_fmt(header_hex, "FFFFFF", True, 10, "CENTER")))
+    # Label cols span rows 0-1
+    for i in range(1, label_col_count + 1):
+        requests.append(merge_req(0, i, 2, i + 1))
+        requests.append(fmt_req(0, i, 2, i + 1, _cell_fmt(header_hex, "FFFFFF", True, 10, "CENTER")))
+
+    # ── Group headers: col_key merged over 2 cols ─────────────────────────
+    col = first_data_col
+    for ck in col_keys:
+        requests.append(merge_req(0, col, 1, col + 2))
+        requests.append(fmt_req(0, col, 1, col + 2, _cell_fmt(header_hex, "FFFFFF", True, 9, "CENTER")))
+        # Sub-headers row 1
+        requests.append(fmt_req(1, col,     2, col + 1, _cell_fmt(sub_hex, "000000", True, 9, "CENTER")))
+        requests.append(fmt_req(1, col + 1, 2, col + 2, _cell_fmt(sub_hex, "000000", True, 9, "CENTER")))
+        col += 2
+
+    # GRAND TOTAL group header
+    requests.append(merge_req(0, col, 1, col + 2))
+    requests.append(fmt_req(0, col, 1, col + 2, _cell_fmt(total_hex, "000000", True, 10, "CENTER")))
+    requests.append(fmt_req(1, col,     2, col + 1, _cell_fmt(total_hex, "000000", True, 9, "CENTER")))
+    requests.append(fmt_req(1, col + 1, 2, col + 2, _cell_fmt(total_hex, "000000", True, 9, "CENTER")))
+
+    # ── Data rows formatting ───────────────────────────────────────────────
+    num_fmt = "#,##0.00"
+    # Date col
+    requests.append(fmt_req(2, 0, total_row_idx, 1, _cell_fmt(None, "000000", False, 9, "CENTER")))
+    # Label cols
+    for i in range(1, label_col_count + 1):
+        requests.append(fmt_req(2, i, total_row_idx, i + 1, _cell_fmt(None, "000000", False, 9, "LEFT")))
+    # Numeric data cols
+    requests.append(fmt_req(2, first_data_col, total_row_idx,
+                            first_data_col + n_pivot_cols,
+                            _cell_fmt(None, "000000", False, 9, "RIGHT", num_fmt)))
+
+    # ── TOTAL row ─────────────────────────────────────────────────────────
+    requests.append(fmt_req(total_row_idx, 0, total_row_idx + 1, total_cols,
+                            _cell_fmt(total_hex, "000000", True, 11, "CENTER")))
+    requests.append(fmt_req(total_row_idx, first_data_col, total_row_idx + 1,
+                            first_data_col + n_pivot_cols,
+                            _cell_fmt(total_hex, "000000", True, 11, "RIGHT", num_fmt)))
+
+    # ── AVG row ───────────────────────────────────────────────────────────
+    requests.append(fmt_req(avg_row_idx, 0, avg_row_idx + 1, total_cols,
+                            _cell_fmt(avg_hex, "000000", True, 11, "CENTER")))
+    requests.append(fmt_req(avg_row_idx, first_data_col, avg_row_idx + 1,
+                            first_data_col + n_pivot_cols,
+                            _cell_fmt(avg_hex, "000000", True, 11, "RIGHT", num_fmt)))
+
+    # ── Freeze header rows ─────────────────────────────────────────────────
+    requests.append({"updateSheetProperties": {
+        "properties": {"sheetId": sheet_id, "gridProperties": {"frozenRowCount": 2, "frozenColumnCount": first_data_col}},
+        "fields": "gridProperties.frozenRowCount,gridProperties.frozenColumnCount"
+    }})
+
+    # ── Outer border ──────────────────────────────────────────────────────
+    requests.append({"updateBorders": {
+        "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": last_row,
+                  "startColumnIndex": 0, "endColumnIndex": total_cols},
+        "outerBorder": {"style": "SOLID_MEDIUM", "color": _hex_to_rgb("000000")}
+    }})
+
+    return requests
+
+
+def _flatten_and_format_geidea(df, tab_name):
+    """Write Geidea simplified pivot to Sheets with full formatting."""
+    import datetime, gspread
     today = datetime.date.today().strftime("%Y-%m-%d")
+
     summary = df.groupby(["Terminal", "Bank Name", "Card Name"]).agg(
         {"Total Debit Credit": "sum"}
     ).reset_index()
     terminals    = sorted(summary["Terminal"].unique())
     banks        = sorted(summary["Bank Name"].unique(), key=lambda x: (x == "Unknown Bank", x))
     card_schemes = sorted(summary["Card Name"].unique())
-    pivot = {}
-    for _, row in summary.iterrows():
-        pivot[(row["Bank Name"], row["Card Name"], row["Terminal"])] = row["Total Debit Credit"]
-    col_totals = {t: sum(pivot.get((b, c, t), 0) for b in banks for c in card_schemes) for t in terminals}
+    pivot = {(r["Bank Name"], r["Card Name"], r["Terminal"]): r["Total Debit Credit"]
+             for _, r in summary.iterrows()}
+    col_totals = {t: sum(pivot.get((b, c, t), 0) for b in banks for c in card_schemes)
+                  for t in terminals}
     n_data_rows = sum(1 for b in banks for c in card_schemes
                       if any((b, c, t) in pivot for t in terminals))
-    headers = ["Date", "Bank Name", "Card Scheme"]
-    for t in terminals:
-        headers += [f"#{t} Total", f"#{t} Avg."]
-    headers += ["Grand Total", "Grand Avg."]
-    rows = [headers]
+    n_terms = len(terminals)
+
+    # Build rows: [Date, Bank, Card, T1_total, T1_avg, ..., Grand_total, Grand_avg]
+    header1 = ["Date", "Bank Name", "Card Scheme"]
+    for t in terminals: header1 += [f"#{t}", ""]
+    header1 += ["GRAND TOTAL", ""]
+
+    header2 = ["", "", ""]
+    for t in terminals: header2 += ["Total", "Avg."]
+    header2 += ["Total", "Avg."]
+
+    data_rows = []
     for bank in banks:
         for card in card_schemes:
-            if not any((bank, card, t) in pivot for t in terminals):
-                continue
+            if not any((bank, card, t) in pivot for t in terminals): continue
             row = [today, bank, card]
             grand = 0.0
             for t in terminals:
                 val = pivot.get((bank, card, t), 0)
                 avg = round(col_totals[t] / n_data_rows, 2) if n_data_rows else 0
-                row += [val, avg]
-                grand += val
-            n_terms = len(terminals)
+                row += [val, avg]; grand += val
             row += [grand, round(grand / n_terms, 2) if n_terms else 0]
-            rows.append(row)
+            data_rows.append(row)
+
+    grand_total = sum(col_totals.values())
     total_row = [today, "TOTAL", ""]
-    grand_total = 0.0
     for t in terminals:
         val = col_totals[t]
         total_row += [val, round(val / n_data_rows, 2) if n_data_rows else 0]
-        grand_total += val
-    n_terms = len(terminals)
     total_row += [grand_total, round(grand_total / n_terms, 2) if n_terms else 0]
-    rows.append(total_row)
-    return rows
+
+    avg_row = [today, "AVG", ""]
+    for t in terminals:
+        val = round(col_totals[t] / n_data_rows, 2) if n_data_rows else 0
+        avg_row += [val, val]
+    avg_row += [round(grand_total / n_data_rows, 2) if n_data_rows else 0,
+                round(grand_total / (n_data_rows * n_terms), 2) if n_data_rows and n_terms else 0]
+
+    all_rows = [header1, header2] + data_rows + [total_row, avg_row]
+    n_rows = len(all_rows); n_cols = len(header1)
+
+    sh, ws = _get_sheet_ws(tab_name, n_rows, n_cols)
+    ws.update(all_rows, value_input_option="USER_ENTERED")
+
+    reqs = _requests_for_pivot(
+        ws, data_rows, terminals, "Bank Name",
+        header_hex="366092", sub_hex="B8CCE4",
+        label_col_count=2   # Bank Name + Card Scheme
+    )
+    sh.batch_update({"requests": reqs})
+    return len(data_rows)
 
 
-def _flatten_foodics_net_pivot(df, row_field, col_field):
+def _flatten_and_format_foodics(df, row_field, col_field, tab_name,
+                                  header_hex, sub_hex):
+    """Write Foodics Net-only pivot to Sheets with full formatting."""
     import datetime
     today = datetime.date.today().strftime("%Y-%m-%d")
+
     summary = df.groupby([row_field, col_field]).agg({"Net Amount": "sum"}).reset_index()
     row_keys = sorted(summary[row_field].unique())
     col_keys = sorted(summary[col_field].unique())
     pivot = {(r[row_field], r[col_field]): r["Net Amount"] for _, r in summary.iterrows()}
     col_totals = {ck: sum(pivot.get((rk, ck), 0) for rk in row_keys) for ck in col_keys}
-    n_rows = len(row_keys); n_cols = len(col_keys)
-    headers = ["Date", row_field]
-    for ck in col_keys:
-        headers += [f"{ck} Total", f"{ck} Avg."]
-    headers += ["Grand Total", "Grand Avg."]
-    rows = [headers]
+    n_rows_count = len(row_keys); n_cols_count = len(col_keys)
+
+    header1 = ["Date", row_field]
+    for ck in col_keys: header1 += [ck, ""]
+    header1 += ["GRAND TOTAL", ""]
+
+    header2 = ["", ""]
+    for ck in col_keys: header2 += ["Total", "Avg."]
+    header2 += ["Total", "Avg."]
+
+    data_rows = []
     for rk in row_keys:
-        row = [today, rk]
-        grand = 0.0
+        row = [today, rk]; grand = 0.0
         for ck in col_keys:
             val = pivot.get((rk, ck), 0)
-            col_avg = round(col_totals[ck] / n_rows, 2) if n_rows else 0
-            row += [val, col_avg]
-            grand += val
-        row += [grand, round(grand / n_cols, 2) if n_cols else 0]
-        rows.append(row)
+            col_avg = round(col_totals[ck] / n_rows_count, 2) if n_rows_count else 0
+            row += [val, col_avg]; grand += val
+        row += [grand, round(grand / n_cols_count, 2) if n_cols_count else 0]
+        data_rows.append(row)
+
+    grand_total = sum(col_totals.values())
     total_row = [today, "TOTAL"]
-    grand_total = 0.0
     for ck in col_keys:
         val = col_totals[ck]
-        total_row += [val, round(val / n_rows, 2) if n_rows else 0]
-        grand_total += val
-    total_row += [grand_total, round(grand_total / n_cols, 2) if n_cols else 0]
-    rows.append(total_row)
-    return rows
+        total_row += [val, round(val / n_rows_count, 2) if n_rows_count else 0]
+    total_row += [grand_total, round(grand_total / n_cols_count, 2) if n_cols_count else 0]
+
+    avg_row = [today, "AVG"]
+    for ck in col_keys:
+        val = round(col_totals[ck] / n_rows_count, 2) if n_rows_count else 0
+        avg_row += [val, val]
+    avg_row += [round(grand_total / n_rows_count, 2) if n_rows_count else 0,
+                round(grand_total / (n_rows_count * n_cols_count), 2) if n_rows_count and n_cols_count else 0]
+
+    all_rows = [header1, header2] + data_rows + [total_row, avg_row]
+    n_rows = len(all_rows); n_cols = len(header1)
+
+    sh, ws = _get_sheet_ws(tab_name, n_rows, n_cols)
+    ws.update(all_rows, value_input_option="USER_ENTERED")
+
+    reqs = _requests_for_pivot(
+        ws, data_rows, col_keys, row_field,
+        header_hex=header_hex, sub_hex=sub_hex,
+        label_col_count=1   # just the row_field label
+    )
+    sh.batch_update({"requests": reqs})
+    return len(data_rows)
 
 
-def push_rows_to_sheet(rows, tab_name):
+def push_rows_to_sheet(kind, df, tab_name, row_field=None, col_field=None,
+                        header_hex=None, sub_hex=None):
+    """Unified push: writes data + formatting to Google Sheets."""
     try:
         gc = get_gspread_client()
-        sh = gc.open_by_key(SHEET_ID)
-        try:
-            ws = sh.worksheet(tab_name)
-            ws.clear()
-        except Exception:
-            ws = sh.add_worksheet(title=tab_name, rows=max(len(rows) + 10, 50), cols=max(len(rows[0]) + 5, 30))
-        ws.update(rows, value_input_option="USER_ENTERED")
-        return True, f"Pushed {len(rows)-1} rows to tab '{tab_name}'"
     except Exception as e:
-        return False, f"Google Sheets error: {str(e)}"
+        return False, f"Auth failed: {str(e)}"
+    try:
+        gc.open_by_key(SHEET_ID)
+    except Exception as e:
+        return False, (
+            "Could not open sheet. Share it with:\n"
+            "invoices-writer@python-scripts-463823.iam.gserviceaccount.com (Editor)\n\n"
+            f"Error: {str(e)}"
+        )
+    try:
+        if kind == "geidea":
+            n = _flatten_and_format_geidea(df, tab_name)
+        else:
+            n = _flatten_and_format_foodics(df, row_field, col_field, tab_name, header_hex, sub_hex)
+        return True, f"Pushed {n} rows to tab '{tab_name}'"
+    except Exception as e:
+        import traceback
+        return False, f"Write error: {str(e)}\n\n{traceback.format_exc()}"
+
 
 
 # ==================== UI ====================
@@ -1299,8 +1556,7 @@ if uploaded_file:
             tab_name_g = st.text_input("Sheet tab name", value=default_tab_g, key="geidea_tab")
             if st.button("📤 Push Geidea Simplified to Sheet", key="geidea_push", type="primary", use_container_width=True):
                 with st.spinner("Connecting to Google Sheets..."):
-                    rows_g = _flatten_geidea_simplified(df_processed)
-                    ok, msg = push_rows_to_sheet(rows_g, tab_name_g)
+                    ok, msg = push_rows_to_sheet("geidea", df_processed, tab_name_g)
                 if ok:
                     st.success(f"✅ {msg}")
                     st.markdown(f"[🔗 Open Google Sheet](https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit)")
@@ -1404,8 +1660,9 @@ if uploaded_file:
                 tab_br = st.text_input("Tab: by Branch", value=f"Foodics_Branch_{default_date_str}", key="f_tab_br")
                 if st.button("📤 Push: Net by Branch → Sheet", key="f_push_br", type="primary", use_container_width=True):
                     with st.spinner("Pushing Branch pivot..."):
-                        rows_br = _flatten_foodics_net_pivot(df_processed, "Payment Method", "Branch")
-                        ok, msg = push_rows_to_sheet(rows_br, tab_br)
+                        ok, msg = push_rows_to_sheet("foodics", df_processed, tab_br,
+                                                     row_field="Payment Method", col_field="Branch",
+                                                     header_hex="2E7D32", sub_hex="A5D6A7")
                     if ok:
                         st.success(f"✅ {msg}")
                         st.markdown(f"[🔗 Open Sheet](https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit)")
@@ -1415,8 +1672,9 @@ if uploaded_file:
                 tab_pm = st.text_input("Tab: by Payment Method", value=f"Foodics_PayMethod_{default_date_str}", key="f_tab_pm")
                 if st.button("📤 Push: Net by Pay Method → Sheet", key="f_push_pm", type="primary", use_container_width=True):
                     with st.spinner("Pushing Payment Method pivot..."):
-                        rows_pm = _flatten_foodics_net_pivot(df_processed, "Branch", "Payment Method")
-                        ok, msg = push_rows_to_sheet(rows_pm, tab_pm)
+                        ok, msg = push_rows_to_sheet("foodics", df_processed, tab_pm,
+                                                     row_field="Branch", col_field="Payment Method",
+                                                     header_hex="1565C0", sub_hex="90CAF9")
                     if ok:
                         st.success(f"✅ {msg}")
                         st.markdown(f"[🔗 Open Sheet](https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit)")

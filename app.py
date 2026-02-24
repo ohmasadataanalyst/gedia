@@ -459,13 +459,20 @@ def create_geidea_detailed_file(df):
     return buf, len(terminals)
 
 
-def _extract_date_label(df):
-    """Extract the reconciliation date from a processed df as a short string like '24-Feb'."""
+def _extract_date_label(df, subtract_day=False):
+    """
+    Extract the reconciliation date from a processed df as a short string like '24-Feb'.
+    If subtract_day=True, subtracts 1 day (for previous-day rows that share the same
+    Reconciliation Date as today because the timestamp rolled over midnight).
+    """
+    import datetime
     try:
         dates = df["Reconciliation Date"].dropna().unique()
         if len(dates) > 0:
             d = sorted(dates)[-1]   # take the latest date
             if hasattr(d, "strftime"):
+                if subtract_day:
+                    d = d - datetime.timedelta(days=1)
                 return d.strftime("%d-%b")   # e.g. "24-Feb"
         return None
     except Exception:
@@ -476,20 +483,23 @@ def create_geidea_detailed_totals_only(df_today, df_prev=None):
     """
     Simplified Geidea: Total only (no Avg) per terminal.
     Sheet tabs named by actual date (e.g. '24-Feb').
-    If df_prev is provided, adds a second sheet for the previous date.
+    Previous-day rows share the same Reconciliation Date as today (the timestamp
+    rolled over midnight), so we subtract 1 day for their label.
     """
     import datetime
 
-    # Determine tab names from actual dates in data
-    today_label = _extract_date_label(df_today)
+    # Today label straight from data
+    today_label = _extract_date_label(df_today, subtract_day=False)
     if today_label is None:
         today_label = datetime.date.today().strftime("%d-%b")
 
     prev_label = None
     if df_prev is not None and len(df_prev) > 0:
-        prev_label = _extract_date_label(df_prev)
+        # Previous-day rows have the SAME Reconciliation Date as today
+        # (Geidea stamps the reconciliation date, not the transaction date)
+        # so we subtract 1 day to get the correct label
+        prev_label = _extract_date_label(df_prev, subtract_day=True)
         if prev_label is None:
-            # fallback: subtract one day from today label
             try:
                 d = datetime.date.today() - datetime.timedelta(days=1)
                 prev_label = d.strftime("%d-%b")
@@ -1122,21 +1132,23 @@ if uploaded_file:
                     today_idx  = [i for i in range(total_rows) if i not in set(prev_idx)]
                     df_prev_raw  = df_raw.iloc[prev_idx].reset_index(drop=True)
                     df_today_raw = df_raw.iloc[today_idx].reset_index(drop=True)
-                    # Try to detect dates from timestamp column for display
-                    _date_col = next((c for c in df_raw.columns if "date" in c.lower()), None)
-                    _prev_date_str = "previous day"
+                    # Detect the base reconciliation date and compute labels
+                    import datetime as _dt_ui
+                    _date_col = next((c for c in df_raw.columns if "date" in c.lower() and "recon" in c.lower()), None)
                     _today_date_str = "today"
+                    _prev_date_str  = "previous day"
                     if _date_col:
                         try:
-                            _prev_dates = pd.to_datetime(df_prev_raw[_date_col], errors="coerce").dt.date.dropna().unique()
-                            _today_dates = pd.to_datetime(df_today_raw[_date_col], errors="coerce").dt.date.dropna().unique()
-                            if len(_prev_dates): _prev_date_str = ", ".join(sorted(str(d) for d in _prev_dates))
-                            if len(_today_dates): _today_date_str = ", ".join(sorted(str(d) for d in _today_dates))
+                            _base_date = pd.to_datetime(df_today_raw[_date_col], errors="coerce").dt.date.dropna().unique()
+                            if len(_base_date):
+                                _d = sorted(_base_date)[-1]
+                                _today_date_str = _d.strftime("%d-%b")
+                                _prev_date_str  = (_d - _dt_ui.timedelta(days=1)).strftime("%d-%b")
                         except Exception:
                             pass
                     st.info(
-                        f"📌 **Rows {prev_start}–{prev_end}** → sheet: `{_prev_date_str}` ({len(prev_idx)} rows)  |  "
-                        f"**Remaining** → sheet: `{_today_date_str}` ({len(today_idx)} rows)"
+                        f"📌 **Rows {prev_start}–{prev_end}** → sheet **`{_prev_date_str}`** ({len(prev_idx)} rows)  |  "
+                        f"**Remaining** → sheet **`{_today_date_str}`** ({len(today_idx)} rows)"
                     )
                     with st.expander("👁 Preview Previous Day rows"):
                         st.dataframe(df_prev_raw, use_container_width=True, height=200)

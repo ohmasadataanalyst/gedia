@@ -459,28 +459,60 @@ def create_geidea_detailed_file(df):
     return buf, len(terminals)
 
 
+def _extract_date_label(df):
+    """Extract the reconciliation date from a processed df as a short string like '24-Feb'."""
+    try:
+        dates = df["Reconciliation Date"].dropna().unique()
+        if len(dates) > 0:
+            d = sorted(dates)[-1]   # take the latest date
+            if hasattr(d, "strftime"):
+                return d.strftime("%d-%b")   # e.g. "24-Feb"
+        return None
+    except Exception:
+        return None
+
+
 def create_geidea_detailed_totals_only(df_today, df_prev=None):
     """
     Simplified Geidea: Total only (no Avg) per terminal.
-    If df_prev is provided, adds a second sheet 'Previous Day'.
+    Sheet tabs named by actual date (e.g. '24-Feb').
+    If df_prev is provided, adds a second sheet for the previous date.
     """
+    import datetime
+
+    # Determine tab names from actual dates in data
+    today_label = _extract_date_label(df_today)
+    if today_label is None:
+        today_label = datetime.date.today().strftime("%d-%b")
+
+    prev_label = None
+    if df_prev is not None and len(df_prev) > 0:
+        prev_label = _extract_date_label(df_prev)
+        if prev_label is None:
+            # fallback: subtract one day from today label
+            try:
+                d = datetime.date.today() - datetime.timedelta(days=1)
+                prev_label = d.strftime("%d-%b")
+            except Exception:
+                prev_label = "Prev Day"
+
     wb = Workbook()
 
-    # ── Today sheet ───────────────────────────────────────────────────────
+    # ── Today sheet (named by actual date) ───────────────────────────────
     ws_today = wb.active
-    ws_today.title = "Today"
+    ws_today.title = today_label
     _apply_simplified_pivot_sheet(
         ws_today, df_today,
-        label=None,
+        label=today_label,
         header_hex="366092", sub_hex="B8CCE4"
     )
 
-    # ── Previous Day sheet (optional) ─────────────────────────────────────
-    if df_prev is not None and len(df_prev) > 0:
-        ws_prev = wb.create_sheet(title="Previous Day")
+    # ── Previous Day sheet (named by its actual date) ─────────────────────
+    if prev_label is not None:
+        ws_prev = wb.create_sheet(title=prev_label)
         _apply_simplified_pivot_sheet(
             ws_prev, df_prev,
-            label="⬅ Previous Day",
+            label=prev_label,
             header_hex="1F4E78", sub_hex="9DC3E6"
         )
 
@@ -1090,10 +1122,21 @@ if uploaded_file:
                     today_idx  = [i for i in range(total_rows) if i not in set(prev_idx)]
                     df_prev_raw  = df_raw.iloc[prev_idx].reset_index(drop=True)
                     df_today_raw = df_raw.iloc[today_idx].reset_index(drop=True)
+                    # Try to detect dates from timestamp column for display
+                    _date_col = next((c for c in df_raw.columns if "date" in c.lower()), None)
+                    _prev_date_str = "previous day"
+                    _today_date_str = "today"
+                    if _date_col:
+                        try:
+                            _prev_dates = pd.to_datetime(df_prev_raw[_date_col], errors="coerce").dt.date.dropna().unique()
+                            _today_dates = pd.to_datetime(df_today_raw[_date_col], errors="coerce").dt.date.dropna().unique()
+                            if len(_prev_dates): _prev_date_str = ", ".join(sorted(str(d) for d in _prev_dates))
+                            if len(_today_dates): _today_date_str = ", ".join(sorted(str(d) for d in _today_dates))
+                        except Exception:
+                            pass
                     st.info(
-                        f"📌 **Previous day:** rows {prev_start}–{prev_end} "
-                        f"({len(prev_idx)} rows)  |  "
-                        f"**Today:** {len(today_idx)} rows"
+                        f"📌 **Rows {prev_start}–{prev_end}** → sheet: `{_prev_date_str}` ({len(prev_idx)} rows)  |  "
+                        f"**Remaining** → sheet: `{_today_date_str}` ({len(today_idx)} rows)"
                     )
                     with st.expander("👁 Preview Previous Day rows"):
                         st.dataframe(df_prev_raw, use_container_width=True, height=200)

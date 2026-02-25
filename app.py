@@ -80,12 +80,9 @@ def branch_code_sort_key(name):
     except ValueError:
         return (9999, name)
 
-# Keep TERMINAL_BANK_MAP for backward compat (Bank Name = branch name now)
-TERMINAL_BANK_MAP = {
-    tid: BRANCH_CODE_NAME_MAP.get(code, f"Unknown ({code})")
-    for tid, code in TERMINAL_BRANCH_CODE_MAP.items()
-}
-# Add known Bank Al Bilad terminals not in branch map (legacy)
+# TERMINAL_BANK_MAP: terminal → Bank Name (always "Bank Al Bilad" for known terminals)
+TERMINAL_BANK_MAP = {tid: "Bank Al Bilad" for tid in TERMINAL_BRANCH_CODE_MAP}
+# Add legacy terminals not in branch map
 _LEGACY = [
     "63189108","63189112","63189116","63189117","63189119","63189120",
     "63189167","63189168","63189169","63189491","63189492","63189497",
@@ -94,8 +91,13 @@ _LEGACY = [
     "63934022","63934023","63934024","63934025",
 ]
 for _t in _LEGACY:
-    if _t not in TERMINAL_BANK_MAP:
-        TERMINAL_BANK_MAP[_t] = "Bank Al Bilad"
+    TERMINAL_BANK_MAP[_t] = "Bank Al Bilad"
+
+# TERMINAL_BRANCH_LABEL_MAP: terminal → branch name label for column headers
+TERMINAL_BRANCH_LABEL_MAP = {
+    tid: BRANCH_CODE_NAME_MAP.get(code, f"#{tid}")
+    for tid, code in TERMINAL_BRANCH_CODE_MAP.items()
+}
 
 # ==================== FILE READING & DETECTION ====================
 
@@ -223,7 +225,7 @@ def _apply_simplified_pivot_sheet(ws, df_subset, label, header_hex, sub_hex,
         {"Total Debit Credit": "sum"}
     ).reset_index()
 
-    terminals    = sorted(summary["Terminal"].unique(), key=lambda t: branch_code_sort_key(TERMINAL_BANK_MAP.get(t, "Unknown Bank")))
+    terminals    = sorted(summary["Terminal"].unique(), key=lambda t: branch_code_sort_key(TERMINAL_BRANCH_LABEL_MAP.get(t, t)))
     banks        = sorted(summary["Bank Name"].unique(), key=lambda x: (x == "Unknown Bank", branch_code_sort_key(x)))
     card_schemes = sorted(summary["Card Name"].unique())
 
@@ -266,7 +268,7 @@ def _apply_simplified_pivot_sheet(ws, df_subset, label, header_hex, sub_hex,
 
     col_idx = 3
     for term in terminals:
-        ws.cell(row=hdr_start, column=col_idx, value=f"#{term}")
+        ws.cell(row=hdr_start, column=col_idx, value=TERMINAL_BRANCH_LABEL_MAP.get(term, f"#{term}"))
         ws.cell(row=hdr_start, column=col_idx).fill      = header_fill
         ws.cell(row=hdr_start, column=col_idx).font      = Font(color="FFFFFF", bold=True, size=9)
         ws.cell(row=hdr_start, column=col_idx).alignment = center
@@ -461,7 +463,7 @@ def create_geidea_detailed_file(df):
     summary = df.groupby(["Terminal", "Bank Name", "Card Name"]).agg({
         "Total Debit": "sum", "Total Credit": "sum", "Total Debit Credit": "sum"
     }).reset_index()
-    terminals    = sorted(summary["Terminal"].unique(), key=lambda t: branch_code_sort_key(TERMINAL_BANK_MAP.get(t, "Unknown Bank")))
+    terminals    = sorted(summary["Terminal"].unique(), key=lambda t: branch_code_sort_key(TERMINAL_BRANCH_LABEL_MAP.get(t, t)))
     banks        = sorted(summary["Bank Name"].unique(), key=lambda x: (x == "Unknown Bank", branch_code_sort_key(x)))
     card_schemes = sorted(summary["Card Name"].unique())
 
@@ -498,7 +500,7 @@ def create_geidea_detailed_file(df):
 
     col_idx = 3
     for term in terminals:
-        ws.cell(row=1, column=col_idx, value=f"#{term}").fill = header_fill
+        ws.cell(row=1, column=col_idx, value=TERMINAL_BRANCH_LABEL_MAP.get(term, f"#{term}")).fill = header_fill
         ws.cell(row=1, column=col_idx).font = Font(color="FFFFFF", bold=True, size=9)
         ws.cell(row=1, column=col_idx).alignment = center
         ws.merge_cells(start_row=1, start_column=col_idx, end_row=1, end_column=col_idx + 2)
@@ -607,7 +609,7 @@ def create_geidea_detailed_by_date_file(df):
         "Total Debit": "sum", "Total Credit": "sum", "Total Debit Credit": "sum"
     }).reset_index()
     dates        = sorted(summary["Reconciliation Date"].unique())
-    terminals    = sorted(summary["Terminal"].unique(), key=lambda t: branch_code_sort_key(TERMINAL_BANK_MAP.get(t, "Unknown Bank")))
+    terminals    = sorted(summary["Terminal"].unique(), key=lambda t: branch_code_sort_key(TERMINAL_BRANCH_LABEL_MAP.get(t, t)))
     banks        = sorted(summary["Bank Name"].unique(), key=lambda x: (x == "Unknown Bank", branch_code_sort_key(x)))
     card_schemes = sorted(summary["Card Name"].unique())
 
@@ -657,7 +659,7 @@ def create_geidea_detailed_by_date_file(df):
         ws.merge_cells(start_row=1, start_column=col_idx, end_row=1, end_column=end_col)
         term_col = col_idx
         for term in terminals:
-            ws.cell(row=2, column=term_col, value=f"#{term}").fill = header_fill
+            ws.cell(row=2, column=term_col, value=TERMINAL_BRANCH_LABEL_MAP.get(term, f"#{term}")).fill = header_fill
             ws.cell(row=2, column=term_col).font = Font(color="FFFFFF", bold=True, size=9)
             ws.cell(row=2, column=term_col).alignment = center
             ws.merge_cells(start_row=2, start_column=term_col, end_row=2, end_column=term_col + 2)

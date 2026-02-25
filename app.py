@@ -8,27 +8,94 @@ import re
 
 st.set_page_config(page_title="Geidea & Foodics Summary Generator", layout="wide")
 
-TERMINAL_BANK_MAP = {
-    "63188996": "Bank Al Bilad", "63189100": "Bank Al Bilad", "63189101": "Bank Al Bilad",
-    "63189103": "Bank Al Bilad", "63189105": "Bank Al Bilad", "63189106": "Bank Al Bilad",
-    "63189107": "Bank Al Bilad", "63189108": "Bank Al Bilad", "63189110": "Bank Al Bilad",
-    "63189112": "Bank Al Bilad", "63189113": "Bank Al Bilad", "63189116": "Bank Al Bilad",
-    "63189117": "Bank Al Bilad", "63189119": "Bank Al Bilad", "63189120": "Bank Al Bilad",
-    "63189121": "Bank Al Bilad", "63189122": "Bank Al Bilad", "63189123": "Bank Al Bilad",
-    "63189124": "Bank Al Bilad", "63189167": "Bank Al Bilad", "63189168": "Bank Al Bilad",
-    "63189169": "Bank Al Bilad", "63189490": "Bank Al Bilad", "63189491": "Bank Al Bilad",
-    "63189492": "Bank Al Bilad", "63189493": "Bank Al Bilad", "63189494": "Bank Al Bilad",
-    "63189496": "Bank Al Bilad", "63189497": "Bank Al Bilad", "63189498": "Bank Al Bilad",
-    "63189499": "Bank Al Bilad", "63189502": "Bank Al Bilad", "63189503": "Bank Al Bilad",
-    "63189504": "Bank Al Bilad", "63189506": "Bank Al Bilad", "63189508": "Bank Al Bilad",
-    "63189510": "Bank Al Bilad", "63189512": "Bank Al Bilad", "63933955": "Bank Al Bilad",
-    "63933956": "Bank Al Bilad", "63933957": "Bank Al Bilad", "63933958": "Bank Al Bilad",
-    "63933959": "Bank Al Bilad", "63934016": "Bank Al Bilad", "63934017": "Bank Al Bilad",
-    "63934018": "Bank Al Bilad", "63934019": "Bank Al Bilad", "63934020": "Bank Al Bilad",
-    "63934021": "Bank Al Bilad", "63934022": "Bank Al Bilad", "63934023": "Bank Al Bilad",
-    "63934024": "Bank Al Bilad", "63934025": "Bank Al Bilad", "64729693": "Bank Al Bilad",
-    "64729694": "Bank Al Bilad", "64729695": "Bank Al Bilad", "64729696": "Bank Al Bilad"
+# Terminal ID → Branch Code (e.g. "B01", "B02", …)
+TERMINAL_BRANCH_CODE_MAP = {
+    "8189573201099250": "B01", "8189572201099250": "B01", "8189568401099240": "B01",
+    "1551813501455580": "B02", "8189580801099270": "B02", "8189569601099240": "B02", "18680360": "B02",
+    "1551824001455540": "B03", "8109111101030290": "B03", "63189123": "B03",
+    "1551835401455550": "B04", "8189570001099240": "B04", "8109110701030290": "B04",
+    "1551842301455540": "B05", "1551848901455540": "B05",
+    "63189498": "B06", "63189502": "B06",
+    "63189106": "B07", "63189110": "B07",
+    "1554733501483710": "B08", "8189582401099270": "B08",
+    "1551822701455590": "B09", "63189490": "B09", "63933957": "B09",
+    "1551838501455590": "B10", "63189504": "B10",
+    "1554861501483710": "B11", "8189567201099240": "B11", "63189494": "B11",
+    "1551865401455580": "B12", "63189100": "B12", "63189101": "B12", "63189103": "B12",
+    "8189582001099270": "B13", "63189105": "B13",
+    "8189568001099240": "B14", "63188996": "B14",
+    "63189121": "B15", "63189122": "B15", "63189124": "B15",
+    "8189583201099280": "B16", "63189107": "B16",
+    "63189493": "B17", "63189496": "B17",
+    "63189508": "B18", "63189510": "B18", "63189512": "B18",
+    "1551874401455580": "B19", "8189566401099230": "B19", "63189113": "B19",
+    "8189578001099260": "B22", "8189574801099250": "B22",
+    "63934017": "B21",
+    "8189579201099270": "B26", "8189577201099260": "B26",
+    "8189565201099230": "B27", "8189564801099230": "B27",
+    "8189579601099270": "B28",
+    "8189568801099240": "B30", "8189566801099230": "B30", "8189566001099230": "B30",
+    "8189564001099230": "B31", "8189563601099230": "B31",
+    "8189578401099260": "B33", "8189571201099250": "B33", "8189570801099240": "B33", "8189570401099240": "B33",
+    "1551816501455580": "B34", "8189581201099270": "B34", "8189578801099260": "B34",
+    "1551829301455570": "B35", "1551843501455570": "B35", "1551892301455570": "B35",
+    "64729693": "B36", "64729694": "B36", "64729695": "B36", "64729696": "B36",
+    "8144089701539140": "B37", "8199376901539140": "B37", "8134184401539140": "B37", "8145052001539140": "B37",
+    "5567115001585440": "B39", "5567068001585440": "B39", "5566976601585440": "B39",
 }
+
+# Branch Code → Branch Name
+BRANCH_CODE_NAME_MAP = {
+    "B01": "NURUH", "B02": "KHRUH", "B03": "GHRUH", "B04": "NSRUH", "B05": "RWRUH",
+    "B06": "DARUH", "B07": "LBRUH", "B08": "SWRUH", "B09": "AZRUH", "B10": "SHRUH",
+    "B11": "NRRUH", "B12": "TWRUH", "B13": "AQRUH", "B14": "RBRUH", "B15": "NDRUH",
+    "B16": "BDRUH", "B17": "QRRUH", "B18": "TKRUH", "B19": "MURUH", "B21": "KRRUH",
+    "B22": "OBJED", "B24": "SFJED", "B25": "RWAHS", "B26": "HAJED", "B27": "SARUH",
+    "B28": "MAJED", "B30": "QARUH", "B31": "ANRUH", "B32": "FYJED", "B33": "HIRJED",
+    "B34": "URRUH", "B35": "IRRUH", "B36": "PSJED", "B37": "SHMAK", "B38": "UHDMM",
+    "B39": "HSRUH", "B23": "SLAHS",
+}
+
+# Ordered list of branch codes for sorting (B01, B02, … B39)
+BRANCH_CODE_ORDER = [
+    "B01","B02","B03","B04","B05","B06","B07","B08","B09","B10",
+    "B11","B12","B13","B14","B15","B16","B17","B18","B19","B20",
+    "B21","B22","B23","B24","B25","B26","B27","B28","B29","B30",
+    "B31","B32","B33","B34","B35","B36","B37","B38","B39",
+]
+
+def branch_code_sort_key(name):
+    """Sort key: by branch code number if name maps to a code, else alphabetical at end."""
+    # name might be branch name (e.g. "NURUH") or branch code (e.g. "B01") or unknown
+    # try reverse lookup: name → code
+    for code, bname in BRANCH_CODE_NAME_MAP.items():
+        if bname == name:
+            try:
+                return (BRANCH_CODE_ORDER.index(code), name)
+            except ValueError:
+                pass
+    # maybe it IS a code already
+    try:
+        return (BRANCH_CODE_ORDER.index(name), name)
+    except ValueError:
+        return (9999, name)
+
+# Keep TERMINAL_BANK_MAP for backward compat (Bank Name = branch name now)
+TERMINAL_BANK_MAP = {
+    tid: BRANCH_CODE_NAME_MAP.get(code, f"Unknown ({code})")
+    for tid, code in TERMINAL_BRANCH_CODE_MAP.items()
+}
+# Add known Bank Al Bilad terminals not in branch map (legacy)
+_LEGACY = [
+    "63189108","63189112","63189116","63189117","63189119","63189120",
+    "63189167","63189168","63189169","63189491","63189492","63189497",
+    "63189499","63189503","63189506","63933955","63933956","63933958",
+    "63933959","63934016","63934018","63934019","63934020","63934021",
+    "63934022","63934023","63934024","63934025",
+]
+for _t in _LEGACY:
+    if _t not in TERMINAL_BANK_MAP:
+        TERMINAL_BANK_MAP[_t] = "Bank Al Bilad"
 
 # ==================== FILE READING & DETECTION ====================
 
@@ -156,8 +223,8 @@ def _apply_simplified_pivot_sheet(ws, df_subset, label, header_hex, sub_hex,
         {"Total Debit Credit": "sum"}
     ).reset_index()
 
-    terminals    = sorted(summary["Terminal"].unique())
-    banks        = sorted(summary["Bank Name"].unique(), key=lambda x: (x == "Unknown Bank", x))
+    terminals    = sorted(summary["Terminal"].unique(), key=lambda t: branch_code_sort_key(TERMINAL_BANK_MAP.get(t, "Unknown Bank")))
+    banks        = sorted(summary["Bank Name"].unique(), key=lambda x: (x == "Unknown Bank", branch_code_sort_key(x)))
     card_schemes = sorted(summary["Card Name"].unique())
 
     pivot = {}
@@ -284,8 +351,9 @@ def _apply_simplified_pivot_sheet(ws, df_subset, label, header_hex, sub_hex,
 
 def create_geidea_summary_file(df):
     summary = df.groupby(["Bank Name", "Card Name"]).agg({"Total": "sum"}).reset_index()
-    summary["Sort"] = summary["Bank Name"].apply(lambda x: 1 if x == "Unknown Bank" else 0)
-    summary = summary.sort_values(["Sort", "Bank Name", "Card Name"]).drop("Sort", axis=1)
+    summary["Sort"]      = summary["Bank Name"].apply(lambda x: 1 if x == "Unknown Bank" else 0)
+    summary["BranchOrd"] = summary["Bank Name"].apply(branch_code_sort_key)
+    summary = summary.sort_values(["Sort", "BranchOrd", "Card Name"]).drop(["Sort","BranchOrd"], axis=1)
 
     wb = Workbook(); ws = wb.active; ws.title = "Summary"
     header_fill  = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
@@ -327,8 +395,9 @@ def create_geidea_summary_by_date_file(df):
     if df["Reconciliation Date"].isna().all():
         return None, None, 0
     summary = df.groupby(["Reconciliation Date", "Bank Name", "Card Name"]).agg({"Total": "sum"}).reset_index()
-    summary["Sort"] = summary["Bank Name"].apply(lambda x: 1 if x == "Unknown Bank" else 0)
-    summary = summary.sort_values(["Reconciliation Date", "Sort", "Bank Name", "Card Name"]).drop("Sort", axis=1)
+    summary["Sort"]      = summary["Bank Name"].apply(lambda x: 1 if x == "Unknown Bank" else 0)
+    summary["BranchOrd"] = summary["Bank Name"].apply(branch_code_sort_key)
+    summary = summary.sort_values(["Reconciliation Date", "Sort", "BranchOrd", "Card Name"]).drop(["Sort","BranchOrd"], axis=1)
 
     wb = Workbook(); ws = wb.active; ws.title = "Summary_by_Date"
     header_fill   = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
@@ -392,8 +461,8 @@ def create_geidea_detailed_file(df):
     summary = df.groupby(["Terminal", "Bank Name", "Card Name"]).agg({
         "Total Debit": "sum", "Total Credit": "sum", "Total Debit Credit": "sum"
     }).reset_index()
-    terminals    = sorted(summary["Terminal"].unique())
-    banks        = sorted(summary["Bank Name"].unique(), key=lambda x: (x == "Unknown Bank", x))
+    terminals    = sorted(summary["Terminal"].unique(), key=lambda t: branch_code_sort_key(TERMINAL_BANK_MAP.get(t, "Unknown Bank")))
+    banks        = sorted(summary["Bank Name"].unique(), key=lambda x: (x == "Unknown Bank", branch_code_sort_key(x)))
     card_schemes = sorted(summary["Card Name"].unique())
 
     rows = []
@@ -538,8 +607,8 @@ def create_geidea_detailed_by_date_file(df):
         "Total Debit": "sum", "Total Credit": "sum", "Total Debit Credit": "sum"
     }).reset_index()
     dates        = sorted(summary["Reconciliation Date"].unique())
-    terminals    = sorted(summary["Terminal"].unique())
-    banks        = sorted(summary["Bank Name"].unique(), key=lambda x: (x == "Unknown Bank", x))
+    terminals    = sorted(summary["Terminal"].unique(), key=lambda t: branch_code_sort_key(TERMINAL_BANK_MAP.get(t, "Unknown Bank")))
+    banks        = sorted(summary["Bank Name"].unique(), key=lambda x: (x == "Unknown Bank", branch_code_sort_key(x)))
     card_schemes = sorted(summary["Card Name"].unique())
 
     rows = []
@@ -625,7 +694,9 @@ def create_geidea_detailed_by_date_file(df):
 def create_foodics_summary_by_branch(df):
     summary = df.groupby(["Branch", "Payment Method"]).agg({
         "Net Amount": "sum", "Amount": "sum", "Return Amount": "sum", "Count": "sum"
-    }).reset_index().sort_values(["Branch", "Net Amount"], ascending=[True, False])
+    }).reset_index()
+    summary["BranchOrd"] = summary["Branch"].apply(branch_code_sort_key)
+    summary = summary.sort_values(["BranchOrd", "Net Amount"], ascending=[True, False]).drop("BranchOrd", axis=1)
 
     wb = Workbook(); ws = wb.active; ws.title = "Summary_by_Branch"
     header_fill   = PatternFill(start_color="2E7D32", end_color="2E7D32", fill_type="solid")
@@ -732,8 +803,13 @@ def _foodics_net_only_pivot(df, row_field, col_field, row_label, col_label,
                              header_hex, sub_hex):
     """Simplified Foodics pivot — Net Amount only, Total column per branch/payment method."""
     summary  = df.groupby([row_field, col_field]).agg({"Net Amount": "sum"}).reset_index()
-    row_keys = sorted(summary[row_field].unique())
-    col_keys = sorted(summary[col_field].unique())
+    def _branch_sort(vals, field_name):
+        if field_name == "Branch":
+            return sorted(vals, key=branch_code_sort_key)
+        return sorted(vals)
+
+    row_keys = _branch_sort(summary[row_field].unique(), row_field)
+    col_keys = _branch_sort(summary[col_field].unique(), col_field)
     pivot    = {(r[row_field], r[col_field]): r["Net Amount"] for _, r in summary.iterrows()}
     col_totals = {ck: sum(pivot.get((rk, ck), 0) for rk in row_keys) for ck in col_keys}
     n_rows = len(row_keys)
@@ -831,7 +907,7 @@ def create_foodics_detailed_by_branch(df):
         "Net Amount": "sum", "Amount": "sum", "Return Amount": "sum", "Count": "sum"
     }).reset_index()
     payment_methods = sorted(summary["Payment Method"].unique())
-    branches = sorted(summary["Branch"].unique())
+    branches = sorted(summary["Branch"].unique(), key=branch_code_sort_key)
 
     wb = Workbook(); ws = wb.active; ws.title = "Detailed_by_Branch"
     header_fill = PatternFill(start_color="2E7D32", end_color="2E7D32", fill_type="solid")
@@ -927,7 +1003,7 @@ def create_foodics_detailed_by_payment_method(df):
     summary = df.groupby(["Branch", "Payment Method"]).agg({
         "Net Amount": "sum", "Amount": "sum", "Return Amount": "sum", "Count": "sum"
     }).reset_index()
-    branches        = sorted(summary["Branch"].unique())
+    branches        = sorted(summary["Branch"].unique(), key=branch_code_sort_key)
     payment_methods = sorted(summary["Payment Method"].unique())
 
     wb = Workbook(); ws = wb.active; ws.title = "Detailed_by_PayMethod"

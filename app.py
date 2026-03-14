@@ -1393,9 +1393,19 @@ def _zenput_group_df(df):
     grouped["_sort"] = grouped["Branch"].apply(branch_code_sort_key)
     grouped = grouped.sort_values(["Date", "_sort"]).drop("_sort", axis=1).reset_index(drop=True)
 
-    # Reorder cols: Date, Branch, channels..., totals, Notes
-    priority_end = ["Total Invoices", "Total Sales", "Foodics Sales", "Difference", "Notes"]
-    middle = [c for c in grouped.columns if c not in ["Date","Branch"] + priority_end]
+    # Drop: all Invoices columns EXCEPT Cash and Cash Purchase Inv.
+    # Drop: Notes column entirely
+    keep_invoice_cols = {"Cash - Invoices", "Cash Purchase Inv. - Invoices"}
+    drop_cols = [
+        c for c in grouped.columns
+        if (c == "Notes") or
+           ("Invoices" in c and c not in keep_invoice_cols and c != "Total Invoices")
+    ]
+    grouped = grouped.drop(columns=drop_cols, errors="ignore")
+
+    # Reorder cols: Date, Branch, channels..., totals
+    priority_end = ["Total Invoices", "Total Sales", "Foodics Sales", "Difference"]
+    middle = [c for c in grouped.columns if c not in ["Date", "Branch"] + priority_end]
     final_cols = ["Date", "Branch"] + middle + [c for c in priority_end if c in grouped.columns]
     return grouped[final_cols]
 

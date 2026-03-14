@@ -216,25 +216,32 @@ def _apply_simplified_pivot_sheet(ws, df_subset, label, header_hex, sub_hex,
     """
     Write a simplified pivot (Total only, no Avg) to ws.
     Rows = Bank Name × Card Scheme
-    Cols = one column per Terminal showing Total Debit Credit
+    Cols = one column per BRANCH (terminals grouped by branch label, summed)
     Plus a GRAND TOTAL column at the end.
     Bottom: TOTAL row.
     Used for both current-day and previous-day tabs.
     """
-    summary = df_subset.groupby(["Terminal", "Bank Name", "Card Name"]).agg(
+    df_work = df_subset.copy()
+    # Map each terminal to its branch label
+    df_work["Branch Label"] = df_work["Terminal"].apply(
+        lambda t: TERMINAL_BRANCH_LABEL_MAP.get(str(t).strip(), f"#{t}")
+    )
+
+    # Group by Branch Label (not individual terminal) + Bank Name + Card Name
+    summary = df_work.groupby(["Branch Label", "Bank Name", "Card Name"]).agg(
         {"Total Debit Credit": "sum"}
     ).reset_index()
 
-    terminals    = sorted(summary["Terminal"].unique(), key=lambda t: branch_code_sort_key(TERMINAL_BRANCH_LABEL_MAP.get(t, t)))
+    branches     = sorted(summary["Branch Label"].unique(), key=branch_code_sort_key)
     banks        = sorted(summary["Bank Name"].unique(), key=lambda x: (x == "Unknown Bank", branch_code_sort_key(x)))
     card_schemes = sorted(summary["Card Name"].unique())
 
     pivot = {}
     for _, row in summary.iterrows():
-        pivot[(row["Bank Name"], row["Card Name"], row["Terminal"])] = row["Total Debit Credit"]
+        pivot[(row["Bank Name"], row["Card Name"], row["Branch Label"])] = row["Total Debit Credit"]
 
-    col_totals = {t: sum(pivot.get((b, c, t), 0) for b in banks for c in card_schemes)
-                  for t in terminals}
+    col_totals = {b: sum(pivot.get((bk, c, b), 0) for bk in banks for c in card_schemes)
+                  for b in branches}
 
     header_fill  = PatternFill(start_color=header_hex, end_color=header_hex, fill_type="solid")
     sub_fill     = PatternFill(start_color=sub_hex,    end_color=sub_hex,    fill_type="solid")
@@ -246,7 +253,7 @@ def _apply_simplified_pivot_sheet(ws, df_subset, label, header_hex, sub_hex,
     # ── Label header (label eg. "Today" or "Previous Day") ────────────────
     if label:
         label_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
-        total_header_cols = 2 + len(terminals) + 1   # Bank + Card + terminals + Grand
+        total_header_cols = 2 + len(branches) + 1   # Bank + Card + branches + Grand
         ws.cell(row=1, column=1, value=label)
         ws.cell(row=1, column=1).fill  = label_fill
         ws.cell(row=1, column=1).font  = Font(color="FFFFFF", bold=True, size=12)
@@ -267,8 +274,8 @@ def _apply_simplified_pivot_sheet(ws, df_subset, label, header_hex, sub_hex,
                        end_row=hdr_start + 1, end_column=c)
 
     col_idx = 3
-    for term in terminals:
-        ws.cell(row=hdr_start, column=col_idx, value=TERMINAL_BRANCH_LABEL_MAP.get(term, f"#{term}"))
+    for branch in branches:
+        ws.cell(row=hdr_start, column=col_idx, value=branch)
         ws.cell(row=hdr_start, column=col_idx).fill      = header_fill
         ws.cell(row=hdr_start, column=col_idx).font      = Font(color="FFFFFF", bold=True, size=9)
         ws.cell(row=hdr_start, column=col_idx).alignment = center
@@ -291,7 +298,7 @@ def _apply_simplified_pivot_sheet(ws, df_subset, label, header_hex, sub_hex,
     row_idx = data_start_row
     for bank in banks:
         for card in card_schemes:
-            if not any((bank, card, t) in pivot for t in terminals):
+            if not any((bank, card, br) in pivot for br in branches):
                 continue
             is_unknown = bank == "Unknown Bank"
             for c, val in [(1, bank), (2, card)]:
@@ -302,8 +309,8 @@ def _apply_simplified_pivot_sheet(ws, df_subset, label, header_hex, sub_hex,
 
             grand_row = 0.0
             col = 3
-            for term in terminals:
-                val = pivot.get((bank, card, term), 0)
+            for branch in branches:
+                val = pivot.get((bank, card, branch), 0)
                 cell_t = ws.cell(row=row_idx, column=col, value=val)
                 cell_t.number_format = "#,##0.00"
                 cell_t.alignment     = right
@@ -328,8 +335,8 @@ def _apply_simplified_pivot_sheet(ws, df_subset, label, header_hex, sub_hex,
 
     grand_total = 0.0
     col = 3
-    for term in terminals:
-        val = col_totals[term]
+    for branch in branches:
+        val = col_totals[branch]
         cell = ws.cell(row=row_idx, column=col, value=val)
         cell.fill = total_fill; cell.font = Font(bold=True)
         cell.number_format = "#,##0.00"; cell.alignment = right
@@ -346,7 +353,7 @@ def _apply_simplified_pivot_sheet(ws, df_subset, label, header_hex, sub_hex,
     for i in range(3, grand_col + 1):
         ws.column_dimensions[get_column_letter(i)].width = 14
 
-    return len(terminals)
+    return len(branches)
 
 
 # ==================== GEIDEA EXCEL FUNCTIONS ====================
@@ -1150,6 +1157,325 @@ def create_foodics_daily_avg_report(df, dates):
     return buf, summary, num_days
 
 
+
+
+# ==================== ZENPUT FINANCIAL FORM ====================
+
+ZENPUT_API_KEY       = "8051c8104fd221694d9aeb305f7f4abb"
+ZENPUT_FINANCIAL_TID = 1556454    # Financial form template ID
+ZENPUT_SHEET_ID      = "1QmcxxyEyDJTyaWp9zg5shcVHOLZPH7ibgr5STFT1ZhY"
+
+# Zenput location code → branch label (same order/names as the rest of the app)
+ZENPUT_BRANCH_MAP = {
+    "2197299": "LBRUH B07",  "2239240": "FYJED B32",  "2235670": "ANRUH B31",
+    "2190657": "SLAHS B23",  "2164026": "NDRUH B15",  "2164019": "SWRUH B08",
+    "2203271": "SARUH B27",  "2164017": "DARUH B06",  "2164032": "KRRUH B21",
+    "2164031": "SFJED B24",  "2164025": "RBRUH B14",  "2164016": "RWRUH B05",
+    "2197297": "NSRUH B04",  "2164021": "SHRUH B10",  "2164013": "KHRUH B02",
+    "2155652": "NURUH B01",  "2164023": "TWRUH B12",  "2164020": "AZRUH B09",
+    "2199002": "RWAHS B25",  "2242934": "HIRJED B33", "2164022": "NRRUH B11",
+    "2164030": "MURUH B19",  "2164014": "GHRUH B03",  "2211854": "QARUH B30",
+    "2258220": "PSJED B36",  "2185452": "OBJED B22",  "2243963": "URRUH B34",
+    "2199835": "HAJED B26",  "2210205": "MAJED B28",  "2250799": "IRRUH B35",
+    "2164027": "BDRUH B16",  "2155654": "AQRUH B13",  "2197298": "TKRUH B18",
+    "2164028": "QRRUH B17",  "2257790": "SHMAK B37",  "2260889": "UHDMM B38",
+    "2263062": "HSRUH B39",
+}
+
+# The delivery/payment channels in the form (in order)
+# Each channel has: Amount value  +  "Invoices - عدد الفواتير" sub-field
+ZENPUT_CHANNELS = [
+    "Noon - نون",
+    "To you - تو يو",
+    "Barakah - بركه",
+    "Mr. Manddob - مستر مندوب",
+    "Ninja - نينجا",
+    "The chefz - ذا شيفز",
+    "Marsool - مرسول",
+    "Solo loyalty - سولو لوياليتي",
+    "Jahez - جاهز",
+    "Hungerstation - هنقرستيشن",
+    "Ketta - كيتا",
+    "Mada - مدى",
+    "Cash - كاش",
+    "Cash used without invoice - الكاش المستخدم من غير فاتورة",
+    "Cash purchase invoice - فواتير الشراء النقدية",
+]
+
+# Short display names for columns
+ZENPUT_CHANNEL_SHORT = {
+    "Noon - نون":                                              "Noon",
+    "To you - تو يو":                                         "To You",
+    "Barakah - بركه":                                         "Barakah",
+    "Mr. Manddob - مستر مندوب":                               "Mr. Manddob",
+    "Ninja - نينجا":                                          "Ninja",
+    "The chefz - ذا شيفز":                                    "The Chefz",
+    "Marsool - مرسول":                                        "Marsool",
+    "Solo loyalty - سولو لوياليتي":                           "Solo Loyalty",
+    "Jahez - جاهز":                                           "Jahez",
+    "Hungerstation - هنقرستيشن":                              "Hungerstation",
+    "Ketta - كيتا":                                           "Ketta",
+    "Mada - مدى":                                             "Mada",
+    "Cash - كاش":                                             "Cash",
+    "Cash used without invoice - الكاش المستخدم من غير فاتورة": "Cash (No Invoice)",
+    "Cash purchase invoice - فواتير الشراء النقدية":          "Cash Purchase Inv.",
+}
+
+
+def zenput_fetch_financial(start_date_str, end_date_str):
+    """
+    Fetch submissions for ZENPUT_FINANCIAL_TID between start and end dates.
+    Returns a DataFrame with one row per submission, columns:
+      Date | Branch | <channel> Amount | <channel> Invoices | ...
+      Total Invoices | Total Sales | Foodics Sales | Difference | Notes
+    Sorted by Date then by branch code order.
+    """
+    import requests, pytz
+    from datetime import datetime
+
+    TZ       = pytz.timezone("Asia/Baghdad")
+    start_dt = TZ.localize(datetime.strptime(start_date_str, "%Y-%m-%d").replace(hour=0,  minute=0,  second=0))
+    end_dt   = TZ.localize(datetime.strptime(end_date_str,   "%Y-%m-%d").replace(hour=23, minute=59, second=59))
+
+    headers  = {"X-API-TOKEN": ZENPUT_API_KEY, "Content-Type": "application/json"}
+    all_subs = []
+    offset, limit = 0, 100
+
+    while True:
+        resp = requests.get(
+            "https://www.zenput.com/api/v3/submissions/",
+            headers=headers,
+            params={
+                "form_template_id": ZENPUT_FINANCIAL_TID,
+                "limit":                limit,
+                "start":                offset,
+                "date_submitted_start": start_date_str,
+            },
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            raise Exception(f"Zenput API error {resp.status_code}: {resp.text[:300]}")
+
+        batch = resp.json().get("data", [])
+        if not batch:
+            break
+
+        for s in batch:
+            raw_date = s.get("smetadata", {}).get("date_submitted_local", "")
+            if not raw_date:
+                continue
+            try:
+                sub_dt = datetime.fromisoformat(raw_date)
+                if sub_dt.tzinfo is None:
+                    sub_dt = TZ.localize(sub_dt)
+                if start_dt <= sub_dt <= end_dt:
+                    all_subs.append(s)
+            except Exception:
+                pass
+
+        offset += limit
+
+        # Early exit: if the oldest submission in this batch is before our range
+        last_raw = batch[-1].get("smetadata", {}).get("date_submitted_local", "")
+        if last_raw:
+            try:
+                last_plain = datetime.fromisoformat(last_raw).replace(tzinfo=None)
+                if last_plain < datetime.strptime(start_date_str, "%Y-%m-%d"):
+                    break
+            except Exception:
+                pass
+
+    if not all_subs:
+        return pd.DataFrame()
+
+    # ── Parse each submission ──────────────────────────────────────────────
+    rows = []
+    for s in all_subs:
+        raw_date = s.get("smetadata", {}).get("date_submitted_local", "")
+        date_str = raw_date[:10] if raw_date else ""
+        answers  = s.get("answers", [])
+
+        row = {"Date": date_str, "Branch": ""}
+
+        # Find branch from "Store - الفرع" field
+        for ans in answers:
+            t = ans.get("title", "")
+            if "Store" in t or "الفرع" in t:
+                code = str(ans.get("value", "")).strip()
+                row["Branch"] = ZENPUT_BRANCH_MAP.get(code, code)
+                break
+
+        # Parse channels: each channel title appears once (amount),
+        # followed immediately by "Invoices - عدد الفواتير" (count).
+        i = 0
+        while i < len(answers):
+            ans   = answers[i]
+            title = ans.get("title", "").strip()
+
+            # Check channel match (partial match to handle minor title variations)
+            matched = None
+            for ch in ZENPUT_CHANNELS:
+                if title == ch or title.startswith(ch[:20]):
+                    matched = ch
+                    break
+
+            if matched:
+                short      = ZENPUT_CHANNEL_SHORT[matched]
+                amt        = ans.get("value", 0) or 0
+                inv        = 0
+                # Next answer should be Invoices sub-field
+                if i + 1 < len(answers):
+                    nxt = answers[i + 1]
+                    if "Invoices" in nxt.get("title", "") or "فاتور" in nxt.get("title", ""):
+                        inv = nxt.get("value", 0) or 0
+                        i += 1
+                row[f"{short} - Amount"]   = amt
+                row[f"{short} - Invoices"] = inv
+
+            elif any(k in title for k in ["Total invoices", "مجموع عدد الفواتير"]):
+                row["Total Invoices"] = ans.get("value", 0) or 0
+
+            elif any(k in title for k in ["Total cash & credit", "اجمالي المبيعات"]):
+                row["Total Sales"] = ans.get("value", 0) or 0
+
+            elif any(k in title for k in ["Sales by Foodics", "المبيعات في فوديكس"]):
+                row["Foodics Sales"] = ans.get("value", 0) or 0
+
+            elif any(k in title for k in ["Difference", "الفرق"]):
+                row["Difference"] = ans.get("value", 0) or 0
+
+            elif any(k in title for k in ["Notes", "ملاحظات"]):
+                row["Notes"] = ans.get("value", "") or ""
+
+            i += 1
+
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+
+    # Sort: Date ascending, then branch by code order
+    df["_sort"] = df["Branch"].apply(branch_code_sort_key)
+    df = df.sort_values(["Date", "_sort"]).drop("_sort", axis=1).reset_index(drop=True)
+
+    return df
+
+
+def zenput_build_excel(df):
+    """
+    Build a formatted Excel workbook from the Zenput financial DataFrame.
+    Returns a BytesIO buffer.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Financial Summary"
+
+    header_fill  = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+    amount_fill  = PatternFill(start_color="DEEAF1", end_color="DEEAF1", fill_type="solid")
+    invoice_fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
+    total_fill   = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    right  = Alignment(horizontal="right")
+
+    cols = df.columns.tolist()
+    for c_idx, col_name in enumerate(cols, 1):
+        cell = ws.cell(row=1, column=c_idx, value=col_name)
+        cell.fill      = header_fill
+        cell.font      = Font(color="FFFFFF", bold=True, size=9)
+        cell.alignment = center
+
+    for r_idx, row_data in enumerate(df.itertuples(index=False), 2):
+        for c_idx, val in enumerate(row_data, 1):
+            col_name = cols[c_idx - 1]
+            cell = ws.cell(row=r_idx, column=c_idx, value=val)
+            if "Amount" in col_name or "Sales" in col_name or "Difference" in col_name:
+                cell.fill         = amount_fill
+                cell.number_format = "#,##0.00"
+                cell.alignment    = right
+            elif "Invoices" in col_name:
+                cell.fill         = invoice_fill
+                cell.number_format = "#,##0"
+                cell.alignment    = right
+            elif col_name in ("Total Invoices",):
+                cell.fill         = total_fill
+                cell.font         = Font(bold=True)
+                cell.number_format = "#,##0"
+                cell.alignment    = right
+            elif col_name in ("Total Sales", "Foodics Sales"):
+                cell.fill         = total_fill
+                cell.font         = Font(bold=True)
+                cell.number_format = "#,##0.00"
+                cell.alignment    = right
+
+    # Column widths
+    ws.column_dimensions["A"].width = 12  # Date
+    ws.column_dimensions["B"].width = 14  # Branch
+    for i in range(3, len(cols) + 1):
+        ws.column_dimensions[get_column_letter(i)].width = 13
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
+def zenput_push_to_sheet(df, tab_name):
+    """Push the financial DataFrame to a tab in ZENPUT_SHEET_ID with formatting."""
+    try:
+        gc = get_gspread_client()
+    except Exception as e:
+        return False, f"Auth failed: {str(e)}"
+    try:
+        sh = gc.open_by_key(ZENPUT_SHEET_ID)
+    except Exception as e:
+        return False, f"Cannot open sheet — share it with the service account first.\nError: {str(e)}"
+    try:
+        try:
+            ws = sh.worksheet(tab_name)
+            ws.clear()
+            if ws.row_count < len(df) + 10 or ws.col_count < len(df.columns) + 5:
+                ws.resize(rows=len(df) + 10, cols=len(df.columns) + 5)
+        except Exception:
+            ws = sh.add_worksheet(title=tab_name, rows=len(df) + 10, cols=len(df.columns) + 5)
+
+        rows = [df.columns.tolist()] + df.fillna("").astype(str).values.tolist()
+        ws.update(rows, value_input_option="USER_ENTERED")
+
+        # Formatting: header row + freeze + auto-resize
+        def _rgb(r, g, b):
+            return {"red": r/255, "green": g/255, "blue": b/255}
+
+        n_cols = len(df.columns)
+        sh.batch_update({"requests": [
+            # Header: dark blue bg, white bold text
+            {"repeatCell": {
+                "range": {"sheetId": ws.id, "startRowIndex": 0, "endRowIndex": 1,
+                          "startColumnIndex": 0, "endColumnIndex": n_cols},
+                "cell": {"userEnteredFormat": {
+                    "backgroundColor": _rgb(31, 78, 120),
+                    "textFormat": {"bold": True, "fontSize": 9,
+                                   "foregroundColor": {"red": 1, "green": 1, "blue": 1}},
+                    "horizontalAlignment": "CENTER",
+                    "wrapStrategy": "WRAP",
+                }},
+                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,wrapStrategy)"
+            }},
+            # Freeze header row
+            {"updateSheetProperties": {
+                "properties": {"sheetId": ws.id, "gridProperties": {"frozenRowCount": 1}},
+                "fields": "gridProperties.frozenRowCount"
+            }},
+            # Auto-resize all columns
+            {"autoResizeDimensions": {
+                "dimensions": {"sheetId": ws.id, "dimension": "COLUMNS",
+                               "startIndex": 0, "endIndex": n_cols}
+            }},
+        ]})
+        return True, f"Pushed {len(df)} rows to tab '{tab_name}'"
+    except Exception as e:
+        import traceback
+        return False, f"Write error: {str(e)}\n{traceback.format_exc()}"
+
+
 # ==================== UI ====================
 
 st.title("🏦 Geidea & Foodics Summary Generator")
@@ -1402,4 +1728,69 @@ if uploaded_file:
         st.info("Please check your file format and try again.")
 
 st.markdown("---")
-st.caption("Geidea & Foodics Summary Generator v5.7 | Total-only simplified · Previous Day split")
+st.header("📋 Zenput Financial Form")
+st.markdown(
+    "Fetch financial form submissions (template **1556454**) from Zenput, "
+    "generate a formatted Excel summary, and optionally push to Google Sheets."
+)
+
+import datetime as _zdt
+_today = _zdt.date.today()
+
+z_c1, z_c2 = st.columns(2)
+with z_c1:
+    z_start = st.date_input("📅 From date", value=_today, key="z_start")
+with z_c2:
+    z_end = st.date_input("📅 To date", value=_today, key="z_end")
+
+z_c3, z_c4 = st.columns(2)
+with z_c3:
+    z_dl   = st.checkbox("⬇️ Download as Excel", value=True,  key="z_dl")
+with z_c4:
+    z_push = st.checkbox("📤 Push to Google Sheet", value=False, key="z_push")
+
+if z_push:
+    z_tab_name = st.text_input(
+        "Sheet tab name",
+        value=f"Financial_{z_start.strftime('%d-%b')}" + (f"_to_{z_end.strftime('%d-%b')}" if z_end != z_start else ""),
+        key="z_tab"
+    )
+
+if st.button("🚀 Fetch Zenput Submissions", type="primary", use_container_width=True, key="z_run"):
+    if z_start > z_end:
+        st.error("Start date must be ≤ end date.")
+    else:
+        with st.spinner(f"Fetching Zenput submissions {z_start} → {z_end} ..."):
+            try:
+                z_df = zenput_fetch_financial(str(z_start), str(z_end))
+            except Exception as e:
+                st.error(f"❌ Fetch error: {str(e)}")
+                z_df = pd.DataFrame()
+
+        if z_df.empty:
+            st.warning("⚠️ No submissions found for the selected date range.")
+        else:
+            st.success(f"✅ Fetched **{len(z_df)} submissions** ({z_start} → {z_end})")
+            with st.expander("👁 Preview data"):
+                st.dataframe(z_df, use_container_width=True, height=300)
+
+            if z_dl:
+                z_buf = zenput_build_excel(z_df)
+                fname = f"Zenput_Financial_{z_start}{'_to_'+str(z_end) if z_end != z_start else ''}.xlsx"
+                st.download_button(
+                    "⬇️ Download Excel", data=z_buf, file_name=fname,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+
+            if z_push:
+                with st.spinner("Pushing to Google Sheets..."):
+                    ok, msg = zenput_push_to_sheet(z_df, z_tab_name)
+                if ok:
+                    st.success(f"✅ {msg}")
+                    st.markdown(f"[🔗 Open Google Sheet](https://docs.google.com/spreadsheets/d/{ZENPUT_SHEET_ID}/edit)")
+                else:
+                    st.error(msg)
+
+st.markdown("---")
+st.caption("Geidea & Foodics v5.8 | Branch-grouped simplified · Previous Day split · Zenput Financial")

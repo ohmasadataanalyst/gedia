@@ -1557,6 +1557,140 @@ def zenput_build_excel(df):
     return buf
 
 
+def zenput_build_excel_by_branch(df):
+    """
+    Build an Excel workbook grouped purely by Branch (all dates combined, summed).
+    Single sheet — one row per branch, TOTAL row at bottom.
+    """
+    df_grouped = _zenput_group_df(df)
+    if df_grouped.empty:
+        buf = io.BytesIO()
+        Workbook().save(buf)
+        buf.seek(0)
+        return buf
+
+    # Drop Date, group by Branch only
+    cols_no_date = [c for c in df_grouped.columns if c != "Date"]
+    numeric_cols = [c for c in cols_no_date if c not in ("Branch", "Notes")]
+
+    df_work = df_grouped[cols_no_date].copy()
+    for c in numeric_cols:
+        df_work[c] = pd.to_numeric(df_work[c], errors="coerce").fillna(0)
+
+    agg_dict = {c: "sum" for c in numeric_cols}
+    if "Notes" in df_work.columns:
+        agg_dict["Notes"] = lambda x: " | ".join(v for v in x if str(v).strip())
+
+    df_branch = df_work.groupby("Branch", sort=False).agg(agg_dict).reset_index()
+    df_branch["_sort"] = df_branch["Branch"].apply(branch_code_sort_key)
+    df_branch = df_branch.sort_values("_sort").drop("_sort", axis=1).reset_index(drop=True)
+
+    # Reorder cols
+    priority_end = ["Total Invoices", "Total Sales", "Foodics Sales", "Difference", "Notes"]
+    middle = [c for c in df_branch.columns if c not in ["Branch"] + priority_end]
+    final_cols = ["Branch"] + middle + [c for c in priority_end if c in df_branch.columns]
+    df_branch = df_branch[final_cols]
+
+    cols = df_branch.columns.tolist()
+    amount_cols  = [c for c in cols if "Amount"   in c or "Sales"      in c or "Difference" in c]
+    invoice_cols = [c for c in cols if "Invoices" in c and c != "Total Invoices"]
+    total_inv    = [c for c in cols if c == "Total Invoices"]
+    total_sales  = [c for c in cols if c in ("Total Sales", "Foodics Sales")]
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "By Branch"
+
+    header_fill  = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+    amount_fill  = PatternFill(start_color="DEEAF1", end_color="DEEAF1", fill_type="solid")
+    invoice_fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
+    total_fill   = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
+    summary_fill = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid")
+    grand_fill   = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    right  = Alignment(horizontal="right")
+    left   = Alignment(horizontal="left")
+
+    # Header row
+    for c_idx, col_name in enumerate(cols, 1):
+        cell = ws.cell(row=1, column=c_idx, value=col_name)
+        cell.font      = Font(color="FFFFFF", bold=True, size=9)
+        cell.alignment = center
+        if col_name == "Branch":
+            cell.fill = PatternFill(start_color="2E4057", end_color="2E4057", fill_type="solid")
+        elif col_name in amount_cols:
+            cell.fill = PatternFill(start_color="1A5276", end_color="1A5276", fill_type="solid")
+        elif col_name in invoice_cols:
+            cell.fill = PatternFill(start_color="1E8449", end_color="1E8449", fill_type="solid")
+        elif col_name in total_inv + total_sales:
+            cell.fill = PatternFill(start_color="B7770D", end_color="B7770D", fill_type="solid")
+        elif col_name == "Difference":
+            cell.fill = PatternFill(start_color="922B21", end_color="922B21", fill_type="solid")
+        elif col_name == "Notes":
+            cell.fill = PatternFill(start_color="566573", end_color="566573", fill_type="solid")
+        else:
+            cell.fill = header_fill
+
+    # Data rows
+    for r_idx, row_data in enumerate(df_branch.itertuples(index=False), 2):
+        row_dict = dict(zip(cols, row_data))
+        for c_idx, col_name in enumerate(cols, 1):
+            val  = row_dict.get(col_name, "")
+            cell = ws.cell(row=r_idx, column=c_idx, value=val)
+            if col_name == "Branch":
+                cell.font = Font(bold=True, size=9); cell.alignment = left
+            elif col_name in amount_cols:
+                cell.fill = amount_fill; cell.number_format = "#,##0.00"
+                cell.alignment = right; cell.font = Font(size=9)
+            elif col_name in invoice_cols:
+                cell.fill = invoice_fill; cell.number_format = "#,##0"
+                cell.alignment = right; cell.font = Font(size=9)
+            elif col_name in total_inv:
+                cell.fill = total_fill; cell.font = Font(bold=True, size=9)
+                cell.number_format = "#,##0"; cell.alignment = right
+            elif col_name in total_sales:
+                cell.fill = total_fill; cell.font = Font(bold=True, size=9)
+                cell.number_format = "#,##0.00"; cell.alignment = right
+            elif col_name == "Difference":
+                cell.fill = summary_fill; cell.font = Font(bold=True, size=9)
+                cell.number_format = "#,##0.00"; cell.alignment = right
+            elif col_name == "Notes":
+                cell.alignment = left; cell.font = Font(size=9)
+
+    # TOTAL row
+    total_row_idx = 2 + len(df_branch)
+    numeric_sum_cols = [c for c in cols if c not in ("Branch", "Notes")]
+    for c_idx, col_name in enumerate(cols, 1):
+        cell = ws.cell(row=total_row_idx, column=c_idx)
+        cell.fill = grand_fill; cell.font = Font(bold=True, color="FFFFFF", size=10)
+        if col_name == "Branch":
+            cell.value = "TOTAL"; cell.alignment = center
+        elif col_name in numeric_sum_cols:
+            cell.value = pd.to_numeric(df_branch[col_name], errors="coerce").fillna(0).sum()
+            cell.number_format = "#,##0" if col_name in invoice_cols + total_inv else "#,##0.00"
+            cell.alignment = right
+        else:
+            cell.value = ""
+
+    # Column widths
+    ws.column_dimensions["A"].width = 16
+    for i in range(2, len(cols) + 1):
+        col_name = cols[i - 1]
+        if col_name == "Notes":
+            ws.column_dimensions[get_column_letter(i)].width = 25
+        elif "Invoices" in col_name:
+            ws.column_dimensions[get_column_letter(i)].width = 9
+        else:
+            ws.column_dimensions[get_column_letter(i)].width = 14
+
+    ws.freeze_panes = "B2"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
 def zenput_push_to_sheet(df, tab_name):
     """Push the financial DataFrame to a tab in ZENPUT_SHEET_ID with formatting."""
     try:
@@ -1914,13 +2048,28 @@ if st.button("🚀 Fetch Zenput Submissions", type="primary", use_container_widt
                 st.dataframe(z_df, use_container_width=True, height=300)
 
             if z_dl:
-                z_buf = zenput_build_excel(z_df)
-                fname = f"Zenput_Financial_{z_start}{'_to_'+str(z_end) if z_end != z_start else ''}.xlsx"
-                st.download_button(
-                    "⬇️ Download Excel", data=z_buf, file_name=fname,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
+                _fname_base = f"Zenput_Financial_{z_start}{'_to_'+str(z_end) if z_end != z_start else ''}"
+                z_buf_by_date   = zenput_build_excel(z_df)
+                z_buf_by_branch = zenput_build_excel_by_branch(z_df)
+                dl_c1, dl_c2 = st.columns(2)
+                with dl_c1:
+                    st.download_button(
+                        "⬇️ By Date (one sheet per day)",
+                        data=z_buf_by_date,
+                        file_name=f"{_fname_base}_ByDate.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        key="z_dl_date"
+                    )
+                with dl_c2:
+                    st.download_button(
+                        "⬇️ By Branch (all dates combined)",
+                        data=z_buf_by_branch,
+                        file_name=f"{_fname_base}_ByBranch.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        key="z_dl_branch"
+                    )
 
             if z_push:
                 with st.spinner("Pushing to Google Sheets..."):

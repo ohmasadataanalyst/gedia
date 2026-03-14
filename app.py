@@ -1360,57 +1360,196 @@ def zenput_fetch_financial(start_date_str, end_date_str):
     return df
 
 
+def _zenput_group_df(df):
+    """
+    Group the raw Zenput DataFrame by Date + Branch, summing all numeric columns
+    and joining Notes. Returns a cleaned, sorted DataFrame.
+    Sheet structure:
+      - One tab per date (named by date)
+      - If only one date, single tab named by that date
+      - Each tab: rows = branches, cols = channels
+      - Bottom: TOTAL row per tab
+    """
+    if df.empty:
+        return df
+
+    # Separate text vs numeric cols
+    text_cols    = ["Date", "Branch", "Notes"]
+    numeric_cols = [c for c in df.columns if c not in text_cols]
+
+    # Coerce all numeric cols to numbers
+    df_work = df.copy()
+    for c in numeric_cols:
+        df_work[c] = pd.to_numeric(df_work[c], errors="coerce").fillna(0)
+
+    # Group: sum numerics, join notes
+    grp = df_work.groupby(["Date", "Branch"], sort=False)
+    agg_dict = {c: "sum" for c in numeric_cols}
+    if "Notes" in df_work.columns:
+        agg_dict["Notes"] = lambda x: " | ".join(v for v in x if str(v).strip())
+    grouped = grp.agg(agg_dict).reset_index()
+
+    # Sort by date then branch code order
+    grouped["_sort"] = grouped["Branch"].apply(branch_code_sort_key)
+    grouped = grouped.sort_values(["Date", "_sort"]).drop("_sort", axis=1).reset_index(drop=True)
+
+    # Reorder cols: Date, Branch, channels..., totals, Notes
+    priority_end = ["Total Invoices", "Total Sales", "Foodics Sales", "Difference", "Notes"]
+    middle = [c for c in grouped.columns if c not in ["Date","Branch"] + priority_end]
+    final_cols = ["Date", "Branch"] + middle + [c for c in priority_end if c in grouped.columns]
+    return grouped[final_cols]
+
+
 def zenput_build_excel(df):
     """
     Build a formatted Excel workbook from the Zenput financial DataFrame.
+    - Groups by Date + Branch (sums all numeric cols)
+    - One sheet per date, named by the date (e.g. '11-Mar')
+    - Each sheet: rows = branches, cols = channels, bottom = TOTAL row
     Returns a BytesIO buffer.
     """
+    df_grouped = _zenput_group_df(df)
+    if df_grouped.empty:
+        buf = io.BytesIO()
+        Workbook().save(buf)
+        buf.seek(0)
+        return buf
+
     wb = Workbook()
-    ws = wb.active
-    ws.title = "Financial Summary"
+    wb.remove(wb.active)   # remove default sheet
 
     header_fill  = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+    branch_fill  = PatternFill(start_color="2E4057", end_color="2E4057", fill_type="solid")
     amount_fill  = PatternFill(start_color="DEEAF1", end_color="DEEAF1", fill_type="solid")
     invoice_fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
     total_fill   = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
+    summary_fill = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid")
+    grand_fill   = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
     center = Alignment(horizontal="center", vertical="center", wrap_text=True)
     right  = Alignment(horizontal="right")
+    left   = Alignment(horizontal="left")
 
-    cols = df.columns.tolist()
-    for c_idx, col_name in enumerate(cols, 1):
-        cell = ws.cell(row=1, column=c_idx, value=col_name)
-        cell.fill      = header_fill
-        cell.font      = Font(color="FFFFFF", bold=True, size=9)
-        cell.alignment = center
+    dates = sorted(df_grouped["Date"].unique())
+    cols  = [c for c in df_grouped.columns if c != "Date"]   # Branch + all data cols
 
-    for r_idx, row_data in enumerate(df.itertuples(index=False), 2):
-        for c_idx, val in enumerate(row_data, 1):
-            col_name = cols[c_idx - 1]
-            cell = ws.cell(row=r_idx, column=c_idx, value=val)
-            if "Amount" in col_name or "Sales" in col_name or "Difference" in col_name:
-                cell.fill         = amount_fill
-                cell.number_format = "#,##0.00"
-                cell.alignment    = right
+    # Column type classification
+    amount_cols  = [c for c in cols if "Amount"  in c or "Sales"  in c or "Difference" in c]
+    invoice_cols = [c for c in cols if "Invoices" in c and c != "Total Invoices"]
+    total_inv    = [c for c in cols if c == "Total Invoices"]
+    total_sales  = [c for c in cols if c in ("Total Sales", "Foodics Sales")]
+    notes_cols   = [c for c in cols if c == "Notes"]
+
+    for date_str in dates:
+        # Tab name: short date like "11-Mar"
+        try:
+            import datetime as _dti
+            tab_name = _dti.datetime.strptime(date_str, "%Y-%m-%d").strftime("%d-%b")
+        except Exception:
+            tab_name = str(date_str)[:10]
+
+        ws = wb.create_sheet(title=tab_name)
+        df_date = df_grouped[df_grouped["Date"] == date_str].reset_index(drop=True)
+
+        # ── Date banner row ──────────────────────────────────────────────────
+        date_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+        ws.cell(row=1, column=1, value=f"Financial Summary — {tab_name}").fill = date_fill
+        ws.cell(row=1, column=1).font      = Font(color="FFFFFF", bold=True, size=12)
+        ws.cell(row=1, column=1).alignment = center
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(cols))
+
+        # ── Column headers ───────────────────────────────────────────────────
+        for c_idx, col_name in enumerate(cols, 1):
+            cell = ws.cell(row=2, column=c_idx, value=col_name)
+            cell.font      = Font(color="FFFFFF", bold=True, size=9)
+            cell.alignment = center
+            # Colour-code header by column type
+            if col_name == "Branch":
+                cell.fill = branch_fill
+            elif col_name in amount_cols:
+                cell.fill = PatternFill(start_color="1A5276", end_color="1A5276", fill_type="solid")
+            elif col_name in invoice_cols:
+                cell.fill = PatternFill(start_color="1E8449", end_color="1E8449", fill_type="solid")
+            elif col_name in total_inv + total_sales:
+                cell.fill = PatternFill(start_color="B7770D", end_color="B7770D", fill_type="solid")
+            elif col_name == "Difference":
+                cell.fill = PatternFill(start_color="922B21", end_color="922B21", fill_type="solid")
+            elif col_name == "Notes":
+                cell.fill = PatternFill(start_color="566573", end_color="566573", fill_type="solid")
+            else:
+                cell.fill = header_fill
+
+        # ── Data rows ────────────────────────────────────────────────────────
+        for r_idx, row_data in enumerate(df_date.itertuples(index=False), 3):
+            row_dict = dict(zip(df_date.columns, row_data))
+            for c_idx, col_name in enumerate(cols, 1):
+                val  = row_dict.get(col_name, "")
+                cell = ws.cell(row=r_idx, column=c_idx, value=val)
+                if col_name == "Branch":
+                    cell.font      = Font(bold=True, size=9)
+                    cell.alignment = left
+                elif col_name in amount_cols:
+                    cell.fill         = amount_fill
+                    cell.number_format = "#,##0.00"
+                    cell.alignment    = right
+                    cell.font         = Font(size=9)
+                elif col_name in invoice_cols:
+                    cell.fill         = invoice_fill
+                    cell.number_format = "#,##0"
+                    cell.alignment    = right
+                    cell.font         = Font(size=9)
+                elif col_name in total_inv:
+                    cell.fill         = total_fill
+                    cell.font         = Font(bold=True, size=9)
+                    cell.number_format = "#,##0"
+                    cell.alignment    = right
+                elif col_name in total_sales:
+                    cell.fill         = total_fill
+                    cell.font         = Font(bold=True, size=9)
+                    cell.number_format = "#,##0.00"
+                    cell.alignment    = right
+                elif col_name == "Difference":
+                    cell.fill         = summary_fill
+                    cell.font         = Font(bold=True, size=9)
+                    cell.number_format = "#,##0.00"
+                    cell.alignment    = right
+                elif col_name == "Notes":
+                    cell.alignment = left
+                    cell.font      = Font(size=9)
+
+        # ── TOTAL row ────────────────────────────────────────────────────────
+        total_row_idx = 3 + len(df_date)
+        numeric_sum_cols = [c for c in cols if c not in ("Branch", "Notes")]
+        for c_idx, col_name in enumerate(cols, 1):
+            cell = ws.cell(row=total_row_idx, column=c_idx)
+            cell.fill = grand_fill
+            cell.font = Font(bold=True, color="FFFFFF", size=10)
+            if col_name == "Branch":
+                cell.value     = "TOTAL"
+                cell.alignment = center
+            elif col_name in numeric_sum_cols:
+                col_vals = pd.to_numeric(df_date[col_name], errors="coerce").fillna(0)
+                cell.value = col_vals.sum()
+                if col_name in invoice_cols + total_inv:
+                    cell.number_format = "#,##0"
+                else:
+                    cell.number_format = "#,##0.00"
+                cell.alignment = right
+            else:
+                cell.value = ""
+
+        # ── Column widths ─────────────────────────────────────────────────────
+        ws.column_dimensions["A"].width = 16   # Branch
+        for i in range(2, len(cols) + 1):
+            col_name = cols[i - 1]
+            if col_name == "Notes":
+                ws.column_dimensions[get_column_letter(i)].width = 25
             elif "Invoices" in col_name:
-                cell.fill         = invoice_fill
-                cell.number_format = "#,##0"
-                cell.alignment    = right
-            elif col_name in ("Total Invoices",):
-                cell.fill         = total_fill
-                cell.font         = Font(bold=True)
-                cell.number_format = "#,##0"
-                cell.alignment    = right
-            elif col_name in ("Total Sales", "Foodics Sales"):
-                cell.fill         = total_fill
-                cell.font         = Font(bold=True)
-                cell.number_format = "#,##0.00"
-                cell.alignment    = right
+                ws.column_dimensions[get_column_letter(i)].width = 9
+            else:
+                ws.column_dimensions[get_column_letter(i)].width = 14
 
-    # Column widths
-    ws.column_dimensions["A"].width = 12  # Date
-    ws.column_dimensions["B"].width = 14  # Branch
-    for i in range(3, len(cols) + 1):
-        ws.column_dimensions[get_column_letter(i)].width = 13
+        # Freeze header rows
+        ws.freeze_panes = "B3"
 
     buf = io.BytesIO()
     wb.save(buf)

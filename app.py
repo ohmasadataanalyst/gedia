@@ -2091,4 +2091,4 @@ if st.button("🚀 Fetch Zenput Submissions", type="primary", use_container_widt
                     st.error(msg)
 
 st.markdown("---")
-st.caption("Geidea & Foodics v5.8 | Branch-grouped simplified · Previous Day split · Zenput Financial")
+st.caption("Geidea & Foodics v5.8 | Branch-grouped simplified · Previous Day split · Zenput Financial.version date: 3/15/2026. made by : omar salah")

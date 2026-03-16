@@ -1394,17 +1394,17 @@ def _zenput_group_df(df):
     grouped = grouped.sort_values(["Date", "_sort"]).drop("_sort", axis=1).reset_index(drop=True)
 
     # Drop: all Invoices columns EXCEPT Cash and Cash Purchase Inv.
-    # Drop: Notes column entirely
+    # Drop: Notes and Total Invoices entirely
     keep_invoice_cols = {"Cash - Invoices", "Cash Purchase Inv. - Invoices"}
     drop_cols = [
         c for c in grouped.columns
-        if (c == "Notes") or
-           ("Invoices" in c and c not in keep_invoice_cols and c != "Total Invoices")
+        if (c in ("Notes", "Total Invoices")) or
+           ("Invoices" in c and c not in keep_invoice_cols)
     ]
     grouped = grouped.drop(columns=drop_cols, errors="ignore")
 
-    # Reorder cols: Date, Branch, channels..., totals
-    priority_end = ["Total Invoices", "Total Sales", "Foodics Sales", "Difference"]
+    # Reorder cols: Date, Branch, channels..., summary cols
+    priority_end = ["Total Sales", "Foodics Sales", "Difference"]
     middle = [c for c in grouped.columns if c not in ["Date", "Branch"] + priority_end]
     final_cols = ["Date", "Branch"] + middle + [c for c in priority_end if c in grouped.columns]
     return grouped[final_cols]
@@ -2091,4 +2091,4 @@ if st.button("🚀 Fetch Zenput Submissions", type="primary", use_container_widt
                     st.error(msg)
 
 st.markdown("---")
-st.caption("Geidea & Foodics v5.8 | Branch-grouped simplified · Previous Day split · Zenput Financial.version date: 3/15/2026. made by : omar salah")
+st.caption("Geidea & Foodics v5.8 | Branch-grouped simplified · Previous Day split · Zenput Financial")

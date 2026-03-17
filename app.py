@@ -1395,10 +1395,11 @@ def _zenput_group_df(df):
 
     # Drop: all Invoices columns EXCEPT Cash and Cash Purchase Inv.
     # Drop: Notes and Total Invoices entirely
-    # Drop ALL Invoices columns and Notes and Total Invoices
+    # Drop all Invoices columns EXCEPT Cash Purchase Inv. - Invoices
     drop_cols = [
         c for c in grouped.columns
-        if (c in ("Notes", "Total Invoices")) or ("Invoices" in c)
+        if (c in ("Notes", "Total Invoices")) or
+           ("Invoices" in c and c != "Cash Purchase Inv. - Invoices")
     ]
     grouped = grouped.drop(columns=drop_cols, errors="ignore")
 

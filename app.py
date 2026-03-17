@@ -557,54 +557,41 @@ def _extract_date_label(df, subtract_day=False):
         return None
 
 
-def create_geidea_detailed_totals_only(df_today, df_prev=None):
+def create_geidea_detailed_totals_only(date_slices):
     """
-    Simplified Geidea: Total only (no Avg) per terminal.
-    Sheet tabs named by actual date (e.g. '24-Feb').
-    Previous-day rows share the same Reconciliation Date as today (the timestamp
-    rolled over midnight), so we subtract 1 day for their label.
+    Simplified Geidea: Total only (no Avg) per branch.
+    date_slices: list of (label: str, df: DataFrame) tuples, ordered newest first.
+      e.g. [("24-Feb", df_today), ("23-Feb", df_prev1), ("22-Feb", df_prev2)]
+    Each slice gets its own sheet tab named by the label.
+    The first slice uses the main blue colour; subsequent slices use darker shades.
     """
-    import datetime
-
-    # Today label straight from data
-    today_label = _extract_date_label(df_today, subtract_day=False)
-    if today_label is None:
-        today_label = datetime.date.today().strftime("%d-%b")
-
-    prev_label = None
-    if df_prev is not None and len(df_prev) > 0:
-        # Previous-day rows have the SAME Reconciliation Date as today
-        # (Geidea stamps the reconciliation date, not the transaction date)
-        # so we subtract 1 day to get the correct label
-        prev_label = _extract_date_label(df_prev, subtract_day=True)
-        if prev_label is None:
-            try:
-                d = datetime.date.today() - datetime.timedelta(days=1)
-                prev_label = d.strftime("%d-%b")
-            except Exception:
-                prev_label = "Prev Day"
+    # Colour pairs (header_hex, sub_hex) — first = today, rest = older days
+    colour_pairs = [
+        ("366092", "B8CCE4"),  # blue  — today / most recent
+        ("1F4E78", "9DC3E6"),  # dark blue — D-1
+        ("4A235A", "D2B4DE"),  # purple    — D-2
+        ("1B4F2E", "A9DFBF"),  # dark green — D-3
+        ("784212", "F5CBA7"),  # brown     — D-4
+    ]
 
     wb = Workbook()
+    first = True
+    n_terminals = 0
 
-    # ── Today sheet (named by actual date) ───────────────────────────────
-    ws_today = wb.active
-    ws_today.title = today_label
-    _apply_simplified_pivot_sheet(
-        ws_today, df_today,
-        label=today_label,
-        header_hex="366092", sub_hex="B8CCE4"
-    )
+    for i, (label, df_slice) in enumerate(date_slices):
+        if df_slice is None or len(df_slice) == 0:
+            continue
+        hx, sx = colour_pairs[min(i, len(colour_pairs) - 1)]
+        if first:
+            ws = wb.active
+            first = False
+        else:
+            ws = wb.create_sheet()
+        ws.title = label
+        _apply_simplified_pivot_sheet(ws, df_slice, label=label, header_hex=hx, sub_hex=sx)
+        if i == 0:
+            n_terminals = len(df_slice["Terminal"].unique()) if "Terminal" in df_slice.columns else 0
 
-    # ── Previous Day sheet (named by its actual date) ─────────────────────
-    if prev_label is not None:
-        ws_prev = wb.create_sheet(title=prev_label)
-        _apply_simplified_pivot_sheet(
-            ws_prev, df_prev,
-            label=prev_label,
-            header_hex="1F4E78", sub_hex="9DC3E6"
-        )
-
-    n_terminals = len(df_today["Terminal"].unique()) if "Terminal" in df_today.columns else 0
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
     return buf, n_terminals
 
@@ -1783,73 +1770,138 @@ if uploaded_file:
                 preview_df.index = range(1, len(preview_df) + 1)   # 1-based for user
                 st.dataframe(preview_df, use_container_width=True, height=300)
 
-            # ── Previous Day row selection ─────────────────────────────────────
+            # ── Date Splitting by Time Cutoff ──────────────────────────────────
             st.markdown("---")
-            st.subheader("📅 Previous Day Rows (Optional)")
-            st.markdown(
-                "The raw file includes a **timestamp** column. Rows from a previous day "
-                "(before midnight cutoff) can appear mixed in. Select the row range below "
-                "to split them into a separate **'Previous Day'** sheet in the simplified report."
-            )
-            total_rows = len(df_raw)
-            use_prev = st.checkbox("✂️ Split previous day rows into a separate sheet", value=False)
+            st.subheader("📅 Split by Date (Optional)")
+            import datetime as _dt_ui
 
-            df_prev_raw = None
-            df_today_raw = df_raw.copy()
+            # Detect time column and reconciliation date
+            _time_col  = next((c for c in df_raw.columns if "time" in c.lower() and "recon" in c.lower()), None)
+            _recon_col = next((c for c in df_raw.columns if "date" in c.lower() and "recon" in c.lower()), None)
+            _base_recon_date = None
+            if _recon_col:
+                try:
+                    _d_found = pd.to_datetime(df_raw[_recon_col], errors="coerce").dt.date.dropna().unique()
+                    if len(_d_found):
+                        _base_recon_date = sorted(_d_found)[-1]
+                except Exception:
+                    pass
 
-            if use_prev:
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    prev_start = st.number_input(
-                        "Previous day: first row", min_value=1, max_value=total_rows,
-                        value=1, step=1,
-                        help="Row number in the file (1 = first data row)"
-                    )
-                with col_b:
-                    prev_end = st.number_input(
-                        "Previous day: last row", min_value=1, max_value=total_rows,
-                        value=min(10, total_rows), step=1
-                    )
-                if prev_start > prev_end:
-                    st.error("⚠️ Start row must be ≤ end row.")
-                    use_prev = False
-                else:
-                    # Rows are 1-based in UI, 0-based in pandas
-                    prev_idx   = list(range(prev_start - 1, prev_end))
-                    today_idx  = [i for i in range(total_rows) if i not in set(prev_idx)]
-                    df_prev_raw  = df_raw.iloc[prev_idx].reset_index(drop=True)
-                    df_today_raw = df_raw.iloc[today_idx].reset_index(drop=True)
-                    # Detect the base reconciliation date and compute labels
-                    import datetime as _dt_ui
-                    _date_col = next((c for c in df_raw.columns if "date" in c.lower() and "recon" in c.lower()), None)
-                    _today_date_str = "today"
-                    _prev_date_str  = "previous day"
-                    if _date_col:
+            use_split = st.checkbox("✂️ Split rows into separate date sheets", value=False)
+
+            # Always start with no split
+            date_slice_dfs = []
+            valid = True
+
+            if use_split and _time_col:
+                st.markdown(
+                    "Geidea stamps the **same Reconciliation Date** on all rows. "
+                    "Rows reconciled in the early morning belong to the **previous day(s)**. "
+                    "Set a **cutoff time** — rows *before* it are treated as the previous day, "
+                    "and so on for each additional day."
+                )
+
+                # Parse times from the file
+                raw_times = pd.to_datetime(df_raw[_time_col], format="%H:%M:%S", errors="coerce")
+                min_time_str = raw_times.dt.strftime("%H:%M").min() if raw_times.notna().any() else "00:00"
+                max_time_str = raw_times.dt.strftime("%H:%M").max() if raw_times.notna().any() else "23:59"
+                st.caption(f"Times in file range from **{min_time_str}** to **{max_time_str}**")
+
+                # How many days are in the file?
+                n_days = st.number_input(
+                    "Total number of days in this file",
+                    min_value=1, max_value=31, value=1, step=1,
+                    help="E.g. 2 = today + 1 previous day. 31 = a full month."
+                )
+
+                cutoffs = []   # list of cutoff time strings (HH:MM), one per boundary
+                if int(n_days) > 1:
+                    st.markdown(f"Set **{int(n_days)-1}** cutoff time(s) to separate the days:")
+                    cut_cols = st.columns(min(int(n_days)-1, 4))
+                    for i in range(int(n_days) - 1):
+                        with cut_cols[i % 4]:
+                            cutoff = st.text_input(
+                                f"Cutoff {i+1} (HH:MM) — splits day {i+1} from day {i+2}",
+                                value="12:00",
+                                key=f"cutoff_{i}",
+                                help="Rows with time < this cutoff = older day"
+                            )
+                            cutoffs.append(cutoff)
+
+                # Build date slices from cutoffs
+                # Strategy: sort rows by time, assign day bucket by cutoffs
+                # cutoffs split the time axis: [0, c1), [c1, c2), [c2, c3), ... → days oldest→newest
+                # Day 0 (oldest) = times before cutoff[0], Day N (newest) = times >= cutoff[-1]
+                try:
+                    row_times = pd.to_datetime(df_raw[_time_col], format="%H:%M:%S", errors="coerce").dt.time
+
+                    # Parse cutoff strings to time objects
+                    cutoff_times = []
+                    for cs in cutoffs:
                         try:
-                            _base_date = pd.to_datetime(df_today_raw[_date_col], errors="coerce").dt.date.dropna().unique()
-                            if len(_base_date):
-                                _d = sorted(_base_date)[-1]
-                                _today_date_str = _d.strftime("%d-%b")
-                                _prev_date_str  = (_d - _dt_ui.timedelta(days=1)).strftime("%d-%b")
+                            h, m = cs.strip().split(":")
+                            cutoff_times.append(_dt_ui.time(int(h), int(m)))
                         except Exception:
-                            pass
-                    st.info(
-                        f"📌 **Rows {prev_start}–{prev_end}** → sheet **`{_prev_date_str}`** ({len(prev_idx)} rows)  |  "
-                        f"**Remaining** → sheet **`{_today_date_str}`** ({len(today_idx)} rows)"
-                    )
-                    with st.expander("👁 Preview Previous Day rows"):
-                        st.dataframe(df_prev_raw, use_container_width=True, height=200)
+                            st.error(f"Invalid cutoff format: '{cs}' — use HH:MM")
+                            valid = False
+
+                    if valid:
+                        # Assign each row to a day bucket (0 = oldest, n_days-1 = newest)
+                        def _assign_day(t):
+                            if pd.isna(t): return int(n_days) - 1
+                            for idx, ct in enumerate(cutoff_times):
+                                if t < ct:
+                                    return idx
+                            return int(n_days) - 1
+
+                        day_buckets = row_times.apply(_assign_day)
+
+                        # Build date_slice_dfs: newest first
+                        # Day n_days-1 = today (recon date), day 0 = oldest (recon date - (n_days-1))
+                        for bucket in range(int(n_days) - 1, -1, -1):
+                            offset = int(n_days) - 1 - bucket
+                            if _base_recon_date:
+                                label = (_base_recon_date - _dt_ui.timedelta(days=offset)).strftime("%d-%b")
+                            else:
+                                label = f"D-{offset}" if offset > 0 else "Today"
+                            df_slice = df_raw[day_buckets == bucket].reset_index(drop=True)
+                            if len(df_slice) > 0:
+                                date_slice_dfs.append((label, df_slice))
+
+                        # Summary
+                        if date_slice_dfs:
+                            summary_parts = [f"**`{lbl}`** {len(df_s)} rows" for lbl, df_s in date_slice_dfs]
+                            st.info("📌 " + "  |  ".join(summary_parts))
+                            with st.expander("👁 Preview each date slice"):
+                                for lbl, df_s in date_slice_dfs:
+                                    st.markdown(f"**{lbl}** — {len(df_s)} rows")
+                                    st.dataframe(df_s[[_time_col] + [c for c in df_s.columns if c != _time_col]]
+                                                 .head(5), use_container_width=True)
+                except Exception as _e:
+                    st.error(f"Error splitting: {_e}")
+                    valid = False
+
+            elif use_split and not _time_col:
+                st.warning("⚠️ No 'Reconciliation Time' column found — cannot auto-split.")
+
+            # If no split defined, everything is one slice (today)
+            if not date_slice_dfs:
+                _today_lbl = _base_recon_date.strftime("%d-%b") if _base_recon_date else "Today"
+                date_slice_dfs = [(_today_lbl, df_raw.copy())]
+
+            df_today_raw = date_slice_dfs[0][1]   # newest = today for other reports
 
             st.markdown("---")
 
             with st.spinner("Processing Geidea reports..."):
-                df_processed       = process_geidea_data(df_today_raw)
-                df_prev_processed  = process_geidea_data(df_prev_raw) if df_prev_raw is not None else None
+                # Process each slice
+                processed_slices = [(label, process_geidea_data(df_s))
+                                    for label, df_s in date_slice_dfs]
+                df_processed = processed_slices[0][1]   # today = first (newest) slice
 
                 summary_buffer, summary_df, grand_total = create_geidea_summary_file(df_processed)
                 detailed_buffer, num_terminals          = create_geidea_detailed_file(df_processed)
-                detailed_tot_buffer, _                  = create_geidea_detailed_totals_only(
-                                                              df_processed, df_prev_processed)
+                detailed_tot_buffer, _                  = create_geidea_detailed_totals_only(processed_slices)
 
                 unique_dates     = df_processed["Reconciliation Date"].dropna().unique()
                 has_multiple_dates = len(unique_dates) > 1
@@ -1879,7 +1931,7 @@ if uploaded_file:
 
             st.subheader("⬇️ Geidea: Download Reports")
             n_reports = 5 if has_multiple_dates else 3
-            prev_note = " *(includes Previous Day sheet)*" if use_prev and df_prev_raw is not None else ""
+            prev_note = f" *({len(date_slice_dfs)} date sheets)*" if use_split and valid and len(date_slice_dfs) > 1 else ""
             st.markdown(f"**{n_reports} Geidea reports generated:**")
             c1, c2 = st.columns(2)
             with c1:

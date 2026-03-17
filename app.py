@@ -65,24 +65,18 @@ BRANCH_CODE_ORDER = [
 ]
 
 def branch_code_sort_key(name):
-    """Sort key: by branch code number if name maps to a code, else alphabetical at end."""
-    # name might be branch name (e.g. "NURUH") or branch code (e.g. "B01") or unknown
-    # try reverse lookup: name → code
     for code, bname in BRANCH_CODE_NAME_MAP.items():
         if bname == name:
             try:
                 return (BRANCH_CODE_ORDER.index(code), name)
             except ValueError:
                 pass
-    # maybe it IS a code already
     try:
         return (BRANCH_CODE_ORDER.index(name), name)
     except ValueError:
         return (9999, name)
 
-# TERMINAL_BANK_MAP: terminal → Bank Name (always "Bank Al Bilad" for known terminals)
 TERMINAL_BANK_MAP = {tid: "Bank Al Bilad" for tid in TERMINAL_BRANCH_CODE_MAP}
-# Add legacy terminals not in branch map
 _LEGACY = [
     "63189108","63189112","63189116","63189117","63189119","63189120",
     "63189167","63189168","63189169","63189491","63189492","63189497",
@@ -93,7 +87,6 @@ _LEGACY = [
 for _t in _LEGACY:
     TERMINAL_BANK_MAP[_t] = "Bank Al Bilad"
 
-# TERMINAL_BRANCH_LABEL_MAP: terminal → branch name label for column headers
 TERMINAL_BRANCH_LABEL_MAP = {
     tid: BRANCH_CODE_NAME_MAP.get(code, f"#{tid}")
     for tid, code in TERMINAL_BRANCH_CODE_MAP.items()
@@ -213,21 +206,11 @@ def process_foodics_data(df):
 
 def _apply_simplified_pivot_sheet(ws, df_subset, label, header_hex, sub_hex,
                                    tab_label="Detailed_Total_Only"):
-    """
-    Write a simplified pivot (Total only, no Avg) to ws.
-    Rows = Bank Name × Card Scheme
-    Cols = one column per BRANCH (terminals grouped by branch label, summed)
-    Plus a GRAND TOTAL column at the end.
-    Bottom: TOTAL row.
-    Used for both current-day and previous-day tabs.
-    """
     df_work = df_subset.copy()
-    # Map each terminal to its branch label
     df_work["Branch Label"] = df_work["Terminal"].apply(
         lambda t: TERMINAL_BRANCH_LABEL_MAP.get(str(t).strip(), f"#{t}")
     )
 
-    # Group by Branch Label (not individual terminal) + Bank Name + Card Name
     summary = df_work.groupby(["Branch Label", "Bank Name", "Card Name"]).agg(
         {"Total Debit Credit": "sum"}
     ).reset_index()
@@ -250,10 +233,9 @@ def _apply_simplified_pivot_sheet(ws, df_subset, label, header_hex, sub_hex,
     center = Alignment(horizontal="center", vertical="center")
     right  = Alignment(horizontal="right")
 
-    # ── Label header (label eg. "Today" or "Previous Day") ────────────────
     if label:
         label_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
-        total_header_cols = 2 + len(branches) + 1   # Bank + Card + branches + Grand
+        total_header_cols = 2 + len(branches) + 1
         ws.cell(row=1, column=1, value=label)
         ws.cell(row=1, column=1).fill  = label_fill
         ws.cell(row=1, column=1).font  = Font(color="FFFFFF", bold=True, size=12)
@@ -263,8 +245,6 @@ def _apply_simplified_pivot_sheet(ws, df_subset, label, header_hex, sub_hex,
     else:
         hdr_start = 1
 
-    # ── Row hdr_start: column headers ────────────────────────────────────
-    # Bank Name and Card Scheme span both header rows
     for c, v in [(1, "Bank Name"), (2, "Card Scheme")]:
         ws.cell(row=hdr_start,     column=c, value=v)
         ws.cell(row=hdr_start,     column=c).fill      = header_fill
@@ -279,12 +259,10 @@ def _apply_simplified_pivot_sheet(ws, df_subset, label, header_hex, sub_hex,
         ws.cell(row=hdr_start, column=col_idx).fill      = header_fill
         ws.cell(row=hdr_start, column=col_idx).font      = Font(color="FFFFFF", bold=True, size=9)
         ws.cell(row=hdr_start, column=col_idx).alignment = center
-        # sub-header row
         c2 = ws.cell(row=hdr_start + 1, column=col_idx, value="Total")
         c2.fill = sub_fill; c2.font = Font(bold=True, size=9); c2.alignment = center
         col_idx += 1
 
-    # Grand Total column header
     grand_col = col_idx
     ws.cell(row=hdr_start, column=grand_col, value="GRAND TOTAL")
     ws.cell(row=hdr_start, column=grand_col).fill      = total_fill
@@ -293,7 +271,6 @@ def _apply_simplified_pivot_sheet(ws, df_subset, label, header_hex, sub_hex,
     c2 = ws.cell(row=hdr_start + 1, column=grand_col, value="Total")
     c2.fill = total_fill; c2.font = Font(bold=True, size=9); c2.alignment = center
 
-    # ── Data rows ─────────────────────────────────────────────────────────
     data_start_row = hdr_start + 2
     row_idx = data_start_row
     for bank in banks:
@@ -327,7 +304,6 @@ def _apply_simplified_pivot_sheet(ws, df_subset, label, header_hex, sub_hex,
                 cell_gt.fill = unknown_fill
             row_idx += 1
 
-    # ── TOTAL row ─────────────────────────────────────────────────────────
     row_idx += 1
     ws.cell(row=row_idx, column=1, value="TOTAL").fill = total_fill
     ws.cell(row=row_idx, column=1).font = Font(bold=True, size=11)
@@ -347,7 +323,6 @@ def _apply_simplified_pivot_sheet(ws, df_subset, label, header_hex, sub_hex,
     cell_gt.fill = total_fill; cell_gt.font = Font(bold=True, size=11)
     cell_gt.number_format = "#,##0.00"; cell_gt.alignment = right
 
-    # ── Column widths ─────────────────────────────────────────────────────
     ws.column_dimensions["A"].width = 20
     ws.column_dimensions["B"].width = 16
     for i in range(3, grand_col + 1):
@@ -537,41 +512,13 @@ def create_geidea_detailed_file(df):
     return buf, len(terminals)
 
 
-def _extract_date_label(df, subtract_day=False):
-    """
-    Extract the reconciliation date from a processed df as a short string like '24-Feb'.
-    If subtract_day=True, subtracts 1 day (for previous-day rows that share the same
-    Reconciliation Date as today because the timestamp rolled over midnight).
-    """
-    import datetime
-    try:
-        dates = df["Reconciliation Date"].dropna().unique()
-        if len(dates) > 0:
-            d = sorted(dates)[-1]   # take the latest date
-            if hasattr(d, "strftime"):
-                if subtract_day:
-                    d = d - datetime.timedelta(days=1)
-                return d.strftime("%d-%b")   # e.g. "24-Feb"
-        return None
-    except Exception:
-        return None
-
-
 def create_geidea_detailed_totals_only(date_slices):
-    """
-    Simplified Geidea: Total only (no Avg) per branch.
-    date_slices: list of (label: str, df: DataFrame) tuples, ordered newest first.
-      e.g. [("24-Feb", df_today), ("23-Feb", df_prev1), ("22-Feb", df_prev2)]
-    Each slice gets its own sheet tab named by the label.
-    The first slice uses the main blue colour; subsequent slices use darker shades.
-    """
-    # Colour pairs (header_hex, sub_hex) — first = today, rest = older days
     colour_pairs = [
-        ("366092", "B8CCE4"),  # blue  — today / most recent
-        ("1F4E78", "9DC3E6"),  # dark blue — D-1
-        ("4A235A", "D2B4DE"),  # purple    — D-2
-        ("1B4F2E", "A9DFBF"),  # dark green — D-3
-        ("784212", "F5CBA7"),  # brown     — D-4
+        ("366092", "B8CCE4"),
+        ("1F4E78", "9DC3E6"),
+        ("4A235A", "D2B4DE"),
+        ("1B4F2E", "A9DFBF"),
+        ("784212", "F5CBA7"),
     ]
 
     wb = Workbook()
@@ -797,7 +744,6 @@ def create_foodics_summary_by_payment_method(df):
 
 def _foodics_net_only_pivot(df, row_field, col_field, row_label, col_label,
                              header_hex, sub_hex):
-    """Simplified Foodics pivot — Net Amount only, Total column per branch/payment method."""
     summary  = df.groupby([row_field, col_field]).agg({"Net Amount": "sum"}).reset_index()
     def _branch_sort(vals, field_name):
         if field_name == "Branch":
@@ -820,7 +766,6 @@ def _foodics_net_only_pivot(df, row_field, col_field, row_label, col_label,
     center = Alignment(horizontal="center", vertical="center")
     right  = Alignment(horizontal="right")
 
-    # Row 1 & 2 headers — row_label spans both rows, each col_key = 1 col (Total only)
     ws.cell(row=1, column=1, value=row_label)
     ws.cell(row=1, column=1).fill = header_fill
     ws.cell(row=1, column=1).font = Font(color="FFFFFF", bold=True, size=10)
@@ -845,7 +790,6 @@ def _foodics_net_only_pivot(df, row_field, col_field, row_label, col_label,
     c2 = ws.cell(row=2, column=grand_col, value="Total")
     c2.fill = total_fill; c2.font = Font(bold=True, size=9); c2.alignment = center
 
-    # Data rows
     row_idx = 3
     for rk in row_keys:
         ws.cell(row=row_idx, column=1, value=rk)
@@ -860,7 +804,6 @@ def _foodics_net_only_pivot(df, row_field, col_field, row_label, col_label,
         ws.cell(row=row_idx, column=grand_col).alignment = right
         row_idx += 1
 
-    # TOTAL row
     row_idx += 1
     ws.cell(row=row_idx, column=1, value="TOTAL").fill = total_fill
     ws.cell(row=row_idx, column=1).font = Font(bold=True, size=11)
@@ -875,7 +818,6 @@ def _foodics_net_only_pivot(df, row_field, col_field, row_label, col_label,
     cell_gt.fill = total_fill; cell_gt.font = Font(bold=True, size=11)
     cell_gt.number_format = "#,##0.00"; cell_gt.alignment = right
 
-    # AVG row
     row_idx += 1
     ws.cell(row=row_idx, column=1, value="AVG").fill = avg_fill
     ws.cell(row=row_idx, column=1).font = Font(bold=True, size=11)
@@ -1144,15 +1086,12 @@ def create_foodics_daily_avg_report(df, dates):
     return buf, summary, num_days
 
 
-
-
 # ==================== ZENPUT FINANCIAL FORM ====================
 
 ZENPUT_API_KEY       = "8051c8104fd221694d9aeb305f7f4abb"
-ZENPUT_FINANCIAL_TID = 1556454    # Financial form template ID
+ZENPUT_FINANCIAL_TID = 1556454
 ZENPUT_SHEET_ID      = "1QmcxxyEyDJTyaWp9zg5shcVHOLZPH7ibgr5STFT1ZhY"
 
-# Zenput location code → branch label (same order/names as the rest of the app)
 ZENPUT_BRANCH_MAP = {
     "2197299": "LBRUH B07",  "2239240": "FYJED B32",  "2235670": "ANRUH B31",
     "2190657": "SLAHS B23",  "2164026": "NDRUH B15",  "2164019": "SWRUH B08",
@@ -1169,54 +1108,28 @@ ZENPUT_BRANCH_MAP = {
     "2263062": "HSRUH B39",
 }
 
-# The delivery/payment channels in the form (in order)
-# Each channel has: Amount value  +  "Invoices - عدد الفواتير" sub-field
 ZENPUT_CHANNELS = [
-    "Noon - نون",
-    "To you - تو يو",
-    "Barakah - بركه",
-    "Mr. Manddob - مستر مندوب",
-    "Ninja - نينجا",
-    "The chefz - ذا شيفز",
-    "Marsool - مرسول",
-    "Solo loyalty - سولو لوياليتي",
-    "Jahez - جاهز",
-    "Hungerstation - هنقرستيشن",
-    "Ketta - كيتا",
-    "Mada - مدى",
-    "Cash - كاش",
+    "Noon - نون", "To you - تو يو", "Barakah - بركه", "Mr. Manddob - مستر مندوب",
+    "Ninja - نينجا", "The chefz - ذا شيفز", "Marsool - مرسول",
+    "Solo loyalty - سولو لوياليتي", "Jahez - جاهز", "Hungerstation - هنقرستيشن",
+    "Ketta - كيتا", "Mada - مدى", "Cash - كاش",
     "Cash used without invoice - الكاش المستخدم من غير فاتورة",
     "Cash purchase invoice - فواتير الشراء النقدية",
 ]
 
-# Short display names for columns
 ZENPUT_CHANNEL_SHORT = {
-    "Noon - نون":                                              "Noon",
-    "To you - تو يو":                                         "To You",
-    "Barakah - بركه":                                         "Barakah",
-    "Mr. Manddob - مستر مندوب":                               "Mr. Manddob",
-    "Ninja - نينجا":                                          "Ninja",
-    "The chefz - ذا شيفز":                                    "The Chefz",
-    "Marsool - مرسول":                                        "Marsool",
-    "Solo loyalty - سولو لوياليتي":                           "Solo Loyalty",
-    "Jahez - جاهز":                                           "Jahez",
-    "Hungerstation - هنقرستيشن":                              "Hungerstation",
-    "Ketta - كيتا":                                           "Ketta",
-    "Mada - مدى":                                             "Mada",
-    "Cash - كاش":                                             "Cash",
+    "Noon - نون": "Noon", "To you - تو يو": "To You", "Barakah - بركه": "Barakah",
+    "Mr. Manddob - مستر مندوب": "Mr. Manddob", "Ninja - نينجا": "Ninja",
+    "The chefz - ذا شيفز": "The Chefz", "Marsool - مرسول": "Marsool",
+    "Solo loyalty - سولو لوياليتي": "Solo Loyalty", "Jahez - جاهز": "Jahez",
+    "Hungerstation - هنقرستيشن": "Hungerstation", "Ketta - كيتا": "Ketta",
+    "Mada - مدى": "Mada", "Cash - كاش": "Cash",
     "Cash used without invoice - الكاش المستخدم من غير فاتورة": "Cash With No Invoices",
-    "Cash purchase invoice - فواتير الشراء النقدية":          "Cash Purchase Inv.",
+    "Cash purchase invoice - فواتير الشراء النقدية": "Cash Purchase Inv.",
 }
 
 
 def zenput_fetch_financial(start_date_str, end_date_str):
-    """
-    Fetch submissions for ZENPUT_FINANCIAL_TID between start and end dates.
-    Returns a DataFrame with one row per submission, columns:
-      Date | Branch | <channel> Amount | <channel> Invoices | ...
-      Total Invoices | Total Sales | Foodics Sales | Difference | Notes
-    Sorted by Date then by branch code order.
-    """
     import requests, pytz
     from datetime import datetime
 
@@ -1234,8 +1147,7 @@ def zenput_fetch_financial(start_date_str, end_date_str):
             headers=headers,
             params={
                 "form_template_id": ZENPUT_FINANCIAL_TID,
-                "limit":                limit,
-                "start":                offset,
+                "limit": limit, "start": offset,
                 "date_submitted_start": start_date_str,
             },
             timeout=30,
@@ -1262,7 +1174,6 @@ def zenput_fetch_financial(start_date_str, end_date_str):
 
         offset += limit
 
-        # Early exit: if the oldest submission in this batch is before our range
         last_raw = batch[-1].get("smetadata", {}).get("date_submitted_local", "")
         if last_raw:
             try:
@@ -1275,16 +1186,13 @@ def zenput_fetch_financial(start_date_str, end_date_str):
     if not all_subs:
         return pd.DataFrame()
 
-    # ── Parse each submission ──────────────────────────────────────────────
     rows = []
     for s in all_subs:
         raw_date = s.get("smetadata", {}).get("date_submitted_local", "")
         date_str = raw_date[:10] if raw_date else ""
         answers  = s.get("answers", [])
-
         row = {"Date": date_str, "Branch": ""}
 
-        # Find branch from "Store - الفرع" field
         for ans in answers:
             t = ans.get("title", "")
             if "Store" in t or "الفرع" in t:
@@ -1292,14 +1200,10 @@ def zenput_fetch_financial(start_date_str, end_date_str):
                 row["Branch"] = ZENPUT_BRANCH_MAP.get(code, code)
                 break
 
-        # Parse channels: each channel title appears once (amount),
-        # followed immediately by "Invoices - عدد الفواتير" (count).
         i = 0
         while i < len(answers):
             ans   = answers[i]
             title = ans.get("title", "").strip()
-
-            # Check channel match (partial match to handle minor title variations)
             matched = None
             for ch in ZENPUT_CHANNELS:
                 if title == ch or title.startswith(ch[:20]):
@@ -1307,10 +1211,9 @@ def zenput_fetch_financial(start_date_str, end_date_str):
                     break
 
             if matched:
-                short      = ZENPUT_CHANNEL_SHORT[matched]
-                amt        = ans.get("value", 0) or 0
-                inv        = 0
-                # Next answer should be Invoices sub-field
+                short = ZENPUT_CHANNEL_SHORT[matched]
+                amt   = ans.get("value", 0) or 0
+                inv   = 0
                 if i + 1 < len(answers):
                     nxt = answers[i + 1]
                     if "Invoices" in nxt.get("title", "") or "فاتور" in nxt.get("title", ""):
@@ -1318,71 +1221,46 @@ def zenput_fetch_financial(start_date_str, end_date_str):
                         i += 1
                 row[f"{short} - Amount"]   = amt
                 row[f"{short} - Invoices"] = inv
-
             elif any(k in title for k in ["Total invoices", "مجموع عدد الفواتير"]):
                 row["Total Invoices"] = ans.get("value", 0) or 0
-
             elif any(k in title for k in ["Total cash & credit", "اجمالي المبيعات"]):
                 row["Total Sales"] = ans.get("value", 0) or 0
-
             elif any(k in title for k in ["Sales by Foodics", "المبيعات في فوديكس"]):
                 row["Foodics Sales"] = ans.get("value", 0) or 0
-
             elif any(k in title for k in ["Difference", "الفرق"]):
                 row["Difference"] = ans.get("value", 0) or 0
-
             elif any(k in title for k in ["Notes", "ملاحظات"]):
                 row["Notes"] = ans.get("value", "") or ""
-
             i += 1
 
         rows.append(row)
 
     df = pd.DataFrame(rows)
-
-    # Sort: Date ascending, then branch by code order
     df["_sort"] = df["Branch"].apply(branch_code_sort_key)
     df = df.sort_values(["Date", "_sort"]).drop("_sort", axis=1).reset_index(drop=True)
-
     return df
 
 
 def _zenput_group_df(df):
-    """
-    Group the raw Zenput DataFrame by Date + Branch, summing all numeric columns
-    and joining Notes. Returns a cleaned, sorted DataFrame.
-    Sheet structure:
-      - One tab per date (named by date)
-      - If only one date, single tab named by that date
-      - Each tab: rows = branches, cols = channels
-      - Bottom: TOTAL row per tab
-    """
     if df.empty:
         return df
 
-    # Separate text vs numeric cols
     text_cols    = ["Date", "Branch", "Notes"]
     numeric_cols = [c for c in df.columns if c not in text_cols]
 
-    # Coerce all numeric cols to numbers
     df_work = df.copy()
     for c in numeric_cols:
         df_work[c] = pd.to_numeric(df_work[c], errors="coerce").fillna(0)
 
-    # Group: sum numerics, join notes
     grp = df_work.groupby(["Date", "Branch"], sort=False)
     agg_dict = {c: "sum" for c in numeric_cols}
     if "Notes" in df_work.columns:
         agg_dict["Notes"] = lambda x: " | ".join(v for v in x if str(v).strip())
     grouped = grp.agg(agg_dict).reset_index()
 
-    # Sort by date then branch code order
     grouped["_sort"] = grouped["Branch"].apply(branch_code_sort_key)
     grouped = grouped.sort_values(["Date", "_sort"]).drop("_sort", axis=1).reset_index(drop=True)
 
-    # Drop: all Invoices columns EXCEPT Cash and Cash Purchase Inv.
-    # Drop: Notes and Total Invoices entirely
-    # Drop all Invoices columns EXCEPT Cash Purchase Inv. - Invoices
     drop_cols = [
         c for c in grouped.columns
         if (c in ("Notes", "Total Invoices")) or
@@ -1390,7 +1268,6 @@ def _zenput_group_df(df):
     ]
     grouped = grouped.drop(columns=drop_cols, errors="ignore")
 
-    # Reorder cols: Date, Branch, channels..., summary cols
     priority_end = ["Total Sales", "Foodics Sales", "Difference"]
     middle = [c for c in grouped.columns if c not in ["Date", "Branch"] + priority_end]
     final_cols = ["Date", "Branch"] + middle + [c for c in priority_end if c in grouped.columns]
@@ -1398,22 +1275,11 @@ def _zenput_group_df(df):
 
 
 def zenput_build_excel(df):
-    """
-    Build a formatted Excel workbook from the Zenput financial DataFrame.
-    - Groups by Date + Branch (sums all numeric cols)
-    - One sheet per date, named by the date (e.g. '11-Mar')
-    - Each sheet: rows = branches, cols = channels, bottom = TOTAL row
-    Returns a BytesIO buffer.
-    """
     df_grouped = _zenput_group_df(df)
     if df_grouped.empty:
-        buf = io.BytesIO()
-        Workbook().save(buf)
-        buf.seek(0)
-        return buf
+        buf = io.BytesIO(); Workbook().save(buf); buf.seek(0); return buf
 
-    wb = Workbook()
-    wb.remove(wb.active)   # remove default sheet
+    wb = Workbook(); wb.remove(wb.active)
 
     header_fill  = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
     branch_fill  = PatternFill(start_color="2E4057", end_color="2E4057", fill_type="solid")
@@ -1427,17 +1293,14 @@ def zenput_build_excel(df):
     left   = Alignment(horizontal="left")
 
     dates = sorted(df_grouped["Date"].unique())
-    cols  = [c for c in df_grouped.columns if c != "Date"]   # Branch + all data cols
+    cols  = [c for c in df_grouped.columns if c != "Date"]
 
-    # Column type classification
-    amount_cols  = [c for c in cols if "Amount"  in c or "Sales"  in c or "Difference" in c]
+    amount_cols  = [c for c in cols if "Amount" in c or "Sales" in c or "Difference" in c]
     invoice_cols = [c for c in cols if "Invoices" in c and c != "Total Invoices"]
     total_inv    = [c for c in cols if c == "Total Invoices"]
     total_sales  = [c for c in cols if c in ("Total Sales", "Foodics Sales")]
-    notes_cols   = [c for c in cols if c == "Notes"]
 
     for date_str in dates:
-        # Tab name: short date like "11-Mar"
         try:
             import datetime as _dti
             tab_name = _dti.datetime.strptime(date_str, "%Y-%m-%d").strftime("%d-%b")
@@ -1447,126 +1310,80 @@ def zenput_build_excel(df):
         ws = wb.create_sheet(title=tab_name)
         df_date = df_grouped[df_grouped["Date"] == date_str].reset_index(drop=True)
 
-        # ── Date banner row ──────────────────────────────────────────────────
-        date_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
-        ws.cell(row=1, column=1, value=f"Financial Summary — {tab_name}").fill = date_fill
+        date_fill_hdr = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+        ws.cell(row=1, column=1, value=f"Financial Summary — {tab_name}").fill = date_fill_hdr
         ws.cell(row=1, column=1).font      = Font(color="FFFFFF", bold=True, size=12)
         ws.cell(row=1, column=1).alignment = center
         ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(cols))
 
-        # ── Column headers ───────────────────────────────────────────────────
         for c_idx, col_name in enumerate(cols, 1):
             cell = ws.cell(row=2, column=c_idx, value=col_name)
-            cell.font      = Font(color="FFFFFF", bold=True, size=9)
-            cell.alignment = center
-            # Colour-code header by column type
-            if col_name == "Branch":
-                cell.fill = branch_fill
-            elif col_name in amount_cols:
-                cell.fill = PatternFill(start_color="1A5276", end_color="1A5276", fill_type="solid")
-            elif col_name in invoice_cols:
-                cell.fill = PatternFill(start_color="1E8449", end_color="1E8449", fill_type="solid")
-            elif col_name in total_inv + total_sales:
-                cell.fill = PatternFill(start_color="B7770D", end_color="B7770D", fill_type="solid")
-            elif col_name == "Difference":
-                cell.fill = PatternFill(start_color="922B21", end_color="922B21", fill_type="solid")
-            elif col_name == "Notes":
-                cell.fill = PatternFill(start_color="566573", end_color="566573", fill_type="solid")
-            else:
-                cell.fill = header_fill
+            cell.font = Font(color="FFFFFF", bold=True, size=9); cell.alignment = center
+            if col_name == "Branch":                    cell.fill = branch_fill
+            elif col_name in amount_cols:               cell.fill = PatternFill(start_color="1A5276", end_color="1A5276", fill_type="solid")
+            elif col_name in invoice_cols:              cell.fill = PatternFill(start_color="1E8449", end_color="1E8449", fill_type="solid")
+            elif col_name in total_inv + total_sales:   cell.fill = PatternFill(start_color="B7770D", end_color="B7770D", fill_type="solid")
+            elif col_name == "Difference":              cell.fill = PatternFill(start_color="922B21", end_color="922B21", fill_type="solid")
+            elif col_name == "Notes":                   cell.fill = PatternFill(start_color="566573", end_color="566573", fill_type="solid")
+            else:                                       cell.fill = header_fill
 
-        # ── Data rows ────────────────────────────────────────────────────────
         for r_idx, row_data in enumerate(df_date.itertuples(index=False), 3):
             row_dict = dict(zip(df_date.columns, row_data))
             for c_idx, col_name in enumerate(cols, 1):
                 val  = row_dict.get(col_name, "")
                 cell = ws.cell(row=r_idx, column=c_idx, value=val)
                 if col_name == "Branch":
-                    cell.font      = Font(bold=True, size=9)
-                    cell.alignment = left
+                    cell.font = Font(bold=True, size=9); cell.alignment = left
                 elif col_name in amount_cols:
-                    cell.fill         = amount_fill
-                    cell.number_format = "#,##0.00"
-                    cell.alignment    = right
-                    cell.font         = Font(size=9)
+                    cell.fill = amount_fill; cell.number_format = "#,##0.00"
+                    cell.alignment = right; cell.font = Font(size=9)
                 elif col_name in invoice_cols:
-                    cell.fill         = invoice_fill
-                    cell.number_format = "#,##0"
-                    cell.alignment    = right
-                    cell.font         = Font(size=9)
+                    cell.fill = invoice_fill; cell.number_format = "#,##0"
+                    cell.alignment = right; cell.font = Font(size=9)
                 elif col_name in total_inv:
-                    cell.fill         = total_fill
-                    cell.font         = Font(bold=True, size=9)
-                    cell.number_format = "#,##0"
-                    cell.alignment    = right
+                    cell.fill = total_fill; cell.font = Font(bold=True, size=9)
+                    cell.number_format = "#,##0"; cell.alignment = right
                 elif col_name in total_sales:
-                    cell.fill         = total_fill
-                    cell.font         = Font(bold=True, size=9)
-                    cell.number_format = "#,##0.00"
-                    cell.alignment    = right
+                    cell.fill = total_fill; cell.font = Font(bold=True, size=9)
+                    cell.number_format = "#,##0.00"; cell.alignment = right
                 elif col_name == "Difference":
-                    cell.fill         = summary_fill
-                    cell.font         = Font(bold=True, size=9)
-                    cell.number_format = "#,##0.00"
-                    cell.alignment    = right
+                    cell.fill = summary_fill; cell.font = Font(bold=True, size=9)
+                    cell.number_format = "#,##0.00"; cell.alignment = right
                 elif col_name == "Notes":
-                    cell.alignment = left
-                    cell.font      = Font(size=9)
+                    cell.alignment = left; cell.font = Font(size=9)
 
-        # ── TOTAL row ────────────────────────────────────────────────────────
-        total_row_idx = 3 + len(df_date)
+        total_row_idx    = 3 + len(df_date)
         numeric_sum_cols = [c for c in cols if c not in ("Branch", "Notes")]
         for c_idx, col_name in enumerate(cols, 1):
             cell = ws.cell(row=total_row_idx, column=c_idx)
-            cell.fill = grand_fill
-            cell.font = Font(bold=True, color="FFFFFF", size=10)
+            cell.fill = grand_fill; cell.font = Font(bold=True, color="FFFFFF", size=10)
             if col_name == "Branch":
-                cell.value     = "TOTAL"
-                cell.alignment = center
+                cell.value = "TOTAL"; cell.alignment = center
             elif col_name in numeric_sum_cols:
                 col_vals = pd.to_numeric(df_date[col_name], errors="coerce").fillna(0)
                 cell.value = col_vals.sum()
-                if col_name in invoice_cols + total_inv:
-                    cell.number_format = "#,##0"
-                else:
-                    cell.number_format = "#,##0.00"
+                cell.number_format = "#,##0" if col_name in invoice_cols + total_inv else "#,##0.00"
                 cell.alignment = right
             else:
                 cell.value = ""
 
-        # ── Column widths ─────────────────────────────────────────────────────
-        ws.column_dimensions["A"].width = 16   # Branch
+        ws.column_dimensions["A"].width = 16
         for i in range(2, len(cols) + 1):
             col_name = cols[i - 1]
-            if col_name == "Notes":
-                ws.column_dimensions[get_column_letter(i)].width = 25
-            elif "Invoices" in col_name:
-                ws.column_dimensions[get_column_letter(i)].width = 9
-            else:
-                ws.column_dimensions[get_column_letter(i)].width = 14
-
-        # Freeze header rows
+            if col_name == "Notes":                    ws.column_dimensions[get_column_letter(i)].width = 25
+            elif "Invoices" in col_name:               ws.column_dimensions[get_column_letter(i)].width = 9
+            else:                                      ws.column_dimensions[get_column_letter(i)].width = 14
         ws.freeze_panes = "B3"
 
-    buf = io.BytesIO()
-    wb.save(buf)
-    buf.seek(0)
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
     return buf
 
 
 def zenput_build_excel_by_branch(df):
-    """
-    Build an Excel workbook grouped purely by Branch (all dates combined, summed).
-    Single sheet — one row per branch, TOTAL row at bottom.
-    """
     df_grouped = _zenput_group_df(df)
     if df_grouped.empty:
-        buf = io.BytesIO()
-        Workbook().save(buf)
-        buf.seek(0)
-        return buf
+        buf = io.BytesIO(); Workbook().save(buf); buf.seek(0); return buf
 
-    # Drop Date, group by Branch only
     cols_no_date = [c for c in df_grouped.columns if c != "Date"]
     numeric_cols = [c for c in cols_no_date if c not in ("Branch", "Notes")]
 
@@ -1582,21 +1399,18 @@ def zenput_build_excel_by_branch(df):
     df_branch["_sort"] = df_branch["Branch"].apply(branch_code_sort_key)
     df_branch = df_branch.sort_values("_sort").drop("_sort", axis=1).reset_index(drop=True)
 
-    # Reorder cols
     priority_end = ["Total Invoices", "Total Sales", "Foodics Sales", "Difference", "Notes"]
     middle = [c for c in df_branch.columns if c not in ["Branch"] + priority_end]
     final_cols = ["Branch"] + middle + [c for c in priority_end if c in df_branch.columns]
     df_branch = df_branch[final_cols]
 
     cols = df_branch.columns.tolist()
-    amount_cols  = [c for c in cols if "Amount"   in c or "Sales"      in c or "Difference" in c]
+    amount_cols  = [c for c in cols if "Amount" in c or "Sales" in c or "Difference" in c]
     invoice_cols = [c for c in cols if "Invoices" in c and c != "Total Invoices"]
     total_inv    = [c for c in cols if c == "Total Invoices"]
     total_sales  = [c for c in cols if c in ("Total Sales", "Foodics Sales")]
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "By Branch"
+    wb = Workbook(); ws = wb.active; ws.title = "By Branch"
 
     header_fill  = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
     amount_fill  = PatternFill(start_color="DEEAF1", end_color="DEEAF1", fill_type="solid")
@@ -1608,27 +1422,17 @@ def zenput_build_excel_by_branch(df):
     right  = Alignment(horizontal="right")
     left   = Alignment(horizontal="left")
 
-    # Header row
     for c_idx, col_name in enumerate(cols, 1):
         cell = ws.cell(row=1, column=c_idx, value=col_name)
-        cell.font      = Font(color="FFFFFF", bold=True, size=9)
-        cell.alignment = center
-        if col_name == "Branch":
-            cell.fill = PatternFill(start_color="2E4057", end_color="2E4057", fill_type="solid")
-        elif col_name in amount_cols:
-            cell.fill = PatternFill(start_color="1A5276", end_color="1A5276", fill_type="solid")
-        elif col_name in invoice_cols:
-            cell.fill = PatternFill(start_color="1E8449", end_color="1E8449", fill_type="solid")
-        elif col_name in total_inv + total_sales:
-            cell.fill = PatternFill(start_color="B7770D", end_color="B7770D", fill_type="solid")
-        elif col_name == "Difference":
-            cell.fill = PatternFill(start_color="922B21", end_color="922B21", fill_type="solid")
-        elif col_name == "Notes":
-            cell.fill = PatternFill(start_color="566573", end_color="566573", fill_type="solid")
-        else:
-            cell.fill = header_fill
+        cell.font = Font(color="FFFFFF", bold=True, size=9); cell.alignment = center
+        if col_name == "Branch":                    cell.fill = PatternFill(start_color="2E4057", end_color="2E4057", fill_type="solid")
+        elif col_name in amount_cols:               cell.fill = PatternFill(start_color="1A5276", end_color="1A5276", fill_type="solid")
+        elif col_name in invoice_cols:              cell.fill = PatternFill(start_color="1E8449", end_color="1E8449", fill_type="solid")
+        elif col_name in total_inv + total_sales:   cell.fill = PatternFill(start_color="B7770D", end_color="B7770D", fill_type="solid")
+        elif col_name == "Difference":              cell.fill = PatternFill(start_color="922B21", end_color="922B21", fill_type="solid")
+        elif col_name == "Notes":                   cell.fill = PatternFill(start_color="566573", end_color="566573", fill_type="solid")
+        else:                                       cell.fill = header_fill
 
-    # Data rows
     for r_idx, row_data in enumerate(df_branch.itertuples(index=False), 2):
         row_dict = dict(zip(cols, row_data))
         for c_idx, col_name in enumerate(cols, 1):
@@ -1654,8 +1458,7 @@ def zenput_build_excel_by_branch(df):
             elif col_name == "Notes":
                 cell.alignment = left; cell.font = Font(size=9)
 
-    # TOTAL row
-    total_row_idx = 2 + len(df_branch)
+    total_row_idx    = 2 + len(df_branch)
     numeric_sum_cols = [c for c in cols if c not in ("Branch", "Notes")]
     for c_idx, col_name in enumerate(cols, 1):
         cell = ws.cell(row=total_row_idx, column=c_idx)
@@ -1669,27 +1472,19 @@ def zenput_build_excel_by_branch(df):
         else:
             cell.value = ""
 
-    # Column widths
     ws.column_dimensions["A"].width = 16
     for i in range(2, len(cols) + 1):
         col_name = cols[i - 1]
-        if col_name == "Notes":
-            ws.column_dimensions[get_column_letter(i)].width = 25
-        elif "Invoices" in col_name:
-            ws.column_dimensions[get_column_letter(i)].width = 9
-        else:
-            ws.column_dimensions[get_column_letter(i)].width = 14
-
+        if col_name == "Notes":          ws.column_dimensions[get_column_letter(i)].width = 25
+        elif "Invoices" in col_name:     ws.column_dimensions[get_column_letter(i)].width = 9
+        else:                            ws.column_dimensions[get_column_letter(i)].width = 14
     ws.freeze_panes = "B2"
 
-    buf = io.BytesIO()
-    wb.save(buf)
-    buf.seek(0)
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
     return buf
 
 
 def zenput_push_to_sheet(df, tab_name):
-    """Push the financial DataFrame to a tab in ZENPUT_SHEET_ID with formatting."""
     try:
         gc = get_gspread_client()
     except Exception as e:
@@ -1710,13 +1505,11 @@ def zenput_push_to_sheet(df, tab_name):
         rows = [df.columns.tolist()] + df.fillna("").astype(str).values.tolist()
         ws.update(rows, value_input_option="USER_ENTERED")
 
-        # Formatting: header row + freeze + auto-resize
         def _rgb(r, g, b):
             return {"red": r/255, "green": g/255, "blue": b/255}
 
         n_cols = len(df.columns)
         sh.batch_update({"requests": [
-            # Header: dark blue bg, white bold text
             {"repeatCell": {
                 "range": {"sheetId": ws.id, "startRowIndex": 0, "endRowIndex": 1,
                           "startColumnIndex": 0, "endColumnIndex": n_cols},
@@ -1724,17 +1517,14 @@ def zenput_push_to_sheet(df, tab_name):
                     "backgroundColor": _rgb(31, 78, 120),
                     "textFormat": {"bold": True, "fontSize": 9,
                                    "foregroundColor": {"red": 1, "green": 1, "blue": 1}},
-                    "horizontalAlignment": "CENTER",
-                    "wrapStrategy": "WRAP",
+                    "horizontalAlignment": "CENTER", "wrapStrategy": "WRAP",
                 }},
                 "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,wrapStrategy)"
             }},
-            # Freeze header row
             {"updateSheetProperties": {
                 "properties": {"sheetId": ws.id, "gridProperties": {"frozenRowCount": 1}},
                 "fields": "gridProperties.frozenRowCount"
             }},
-            # Auto-resize all columns
             {"autoResizeDimensions": {
                 "dimensions": {"sheetId": ws.id, "dimension": "COLUMNS",
                                "startIndex": 0, "endIndex": n_cols}
@@ -1767,7 +1557,7 @@ if uploaded_file:
 
             with st.expander("🔍 Preview Raw Data (with row numbers)"):
                 preview_df = df_raw.copy()
-                preview_df.index = range(1, len(preview_df) + 1)   # 1-based for user
+                preview_df.index = range(1, len(preview_df) + 1)
                 st.dataframe(preview_df, use_container_width=True, height=300)
 
             # ── Date Splitting by Time Cutoff ──────────────────────────────────
@@ -1775,135 +1565,126 @@ if uploaded_file:
             st.subheader("📅 Split by Date (Optional)")
             import datetime as _dt_ui
 
-            # Detect time column and reconciliation date
             _time_col  = next((c for c in df_raw.columns if "time" in c.lower() and "recon" in c.lower()), None)
             _recon_col = next((c for c in df_raw.columns if "date" in c.lower() and "recon" in c.lower()), None)
-            _base_recon_date = None
-            if _recon_col:
-                try:
-                    _d_found = pd.to_datetime(df_raw[_recon_col], errors="coerce").dt.date.dropna().unique()
-                    if len(_d_found):
-                        _base_recon_date = sorted(_d_found)[-1]
-                except Exception:
-                    pass
 
             use_split = st.checkbox("✂️ Split rows into separate date sheets", value=False)
 
-            # Always start with no split
             date_slice_dfs = []
             valid = True
 
-            if use_split and _time_col:
+            if use_split and _time_col and _recon_col:
                 st.markdown(
-                    "Geidea stamps the **same Reconciliation Date** on all rows. "
-                    "Rows reconciled in the early morning belong to the **previous day(s)**. "
-                    "Set a **cutoff time** — rows *before* it are treated as the previous day, "
-                    "and so on for each additional day."
+                    "Geidea stamps a **Reconciliation Date** on each row. "
+                    "Rows reconciled in the early morning actually belong to the **previous day**. "
+                    "Set a **cutoff time** — any row whose time is *before* the cutoff will have its "
+                    "date shifted back by one day."
                 )
 
-                # Parse times from the file
+                # Show time range in file
                 raw_times = pd.to_datetime(df_raw[_time_col], format="%H:%M:%S", errors="coerce")
                 min_time_str = raw_times.dt.strftime("%H:%M").min() if raw_times.notna().any() else "00:00"
                 max_time_str = raw_times.dt.strftime("%H:%M").max() if raw_times.notna().any() else "23:59"
                 st.caption(f"Times in file range from **{min_time_str}** to **{max_time_str}**")
 
-                # How many days are in the file?
-                n_days = st.number_input(
-                    "Total number of days in this file",
-                    min_value=1, max_value=31, value=1, step=1,
-                    help="E.g. 2 = today + 1 previous day. 31 = a full month."
+                # Show unique dates found in the file
+                raw_dates = pd.to_datetime(df_raw[_recon_col], errors="coerce").dt.date.dropna().unique()
+                unique_dates_in_file = sorted(raw_dates)
+                st.caption(f"Reconciliation dates found in file: **{', '.join(d.strftime('%d-%b-%Y') for d in unique_dates_in_file)}**")
+
+                # Single cutoff time input
+                cutoff_input = st.text_input(
+                    "Cutoff time (HH:MM) — rows before this time get shifted to the previous day",
+                    value="04:22",
+                    help="e.g. 04:22 means any row with time < 04:22 belongs to the day before its Reconciliation Date"
                 )
 
-                cutoffs = []   # list of cutoff time strings (HH:MM), one per boundary
-                if int(n_days) > 1:
-                    st.markdown(f"Set **{int(n_days)-1}** cutoff time(s) to separate the days:")
-                    cut_cols = st.columns(min(int(n_days)-1, 4))
-                    for i in range(int(n_days) - 1):
-                        with cut_cols[i % 4]:
-                            cutoff = st.text_input(
-                                f"Cutoff {i+1} (HH:MM) — splits day {i+1} from day {i+2}",
-                                value="12:00",
-                                key=f"cutoff_{i}",
-                                help="Rows with time < this cutoff = older day"
-                            )
-                            cutoffs.append(cutoff)
-
-                # Build date slices from cutoffs
-                # Strategy: sort rows by time, assign day bucket by cutoffs
-                # cutoffs split the time axis: [0, c1), [c1, c2), [c2, c3), ... → days oldest→newest
-                # Day 0 (oldest) = times before cutoff[0], Day N (newest) = times >= cutoff[-1]
                 try:
-                    row_times = pd.to_datetime(df_raw[_time_col], format="%H:%M:%S", errors="coerce").dt.time
-
-                    # Parse cutoff strings to time objects
-                    cutoff_times = []
-                    for cs in cutoffs:
-                        try:
-                            h, m = cs.strip().split(":")
-                            cutoff_times.append(_dt_ui.time(int(h), int(m)))
-                        except Exception:
-                            st.error(f"Invalid cutoff format: '{cs}' — use HH:MM")
-                            valid = False
-
-                    if valid:
-                        # Assign each row to a day bucket (0 = oldest, n_days-1 = newest)
-                        def _assign_day(t):
-                            if pd.isna(t): return int(n_days) - 1
-                            for idx, ct in enumerate(cutoff_times):
-                                if t < ct:
-                                    return idx
-                            return int(n_days) - 1
-
-                        day_buckets = row_times.apply(_assign_day)
-
-                        # Build date_slice_dfs: newest first
-                        # Day n_days-1 = today (recon date), day 0 = oldest (recon date - (n_days-1))
-                        for bucket in range(int(n_days) - 1, -1, -1):
-                            offset = int(n_days) - 1 - bucket
-                            if _base_recon_date:
-                                label = (_base_recon_date - _dt_ui.timedelta(days=offset)).strftime("%d-%b")
-                            else:
-                                label = f"D-{offset}" if offset > 0 else "Today"
-                            df_slice = df_raw[day_buckets == bucket].reset_index(drop=True)
-                            if len(df_slice) > 0:
-                                date_slice_dfs.append((label, df_slice))
-
-                        # Summary
-                        if date_slice_dfs:
-                            summary_parts = [f"**`{lbl}`** {len(df_s)} rows" for lbl, df_s in date_slice_dfs]
-                            st.info("📌 " + "  |  ".join(summary_parts))
-                            with st.expander("👁 Preview each date slice"):
-                                for lbl, df_s in date_slice_dfs:
-                                    st.markdown(f"**{lbl}** — {len(df_s)} rows")
-                                    st.dataframe(df_s[[_time_col] + [c for c in df_s.columns if c != _time_col]]
-                                                 .head(5), use_container_width=True)
-                except Exception as _e:
-                    st.error(f"Error splitting: {_e}")
+                    h, m = cutoff_input.strip().split(":")
+                    cutoff_time = _dt_ui.time(int(h), int(m))
+                except Exception:
+                    st.error(f"Invalid cutoff format: '{cutoff_input}' — use HH:MM")
                     valid = False
+                    cutoff_time = None
 
-            elif use_split and not _time_col:
-                st.warning("⚠️ No 'Reconciliation Time' column found — cannot auto-split.")
+                if valid and cutoff_time is not None:
+                    # ── CORE FIX: per-row logic ──────────────────────────────
+                    # Parse time and date columns
+                    row_times = pd.to_datetime(df_raw[_time_col], format="%H:%M:%S", errors="coerce").dt.time
+                    row_dates = pd.to_datetime(df_raw[_recon_col], errors="coerce").dt.date
 
-            # If no split defined, everything is one slice (today)
+                    # Compute the real date for each row:
+                    # - if time < cutoff  →  real date = Reconciliation Date - 1 day
+                    # - if time >= cutoff →  real date = Reconciliation Date (unchanged)
+                    def _compute_real_date(row_time, row_date):
+                        if pd.isna(row_time) or row_date is None:
+                            return row_date
+                        if row_time < cutoff_time:
+                            return row_date - _dt_ui.timedelta(days=1)
+                        return row_date
+
+                    real_dates = [
+                        _compute_real_date(t, d)
+                        for t, d in zip(row_times, row_dates)
+                    ]
+                    real_dates_series = pd.Series(real_dates, index=df_raw.index)
+
+                    # Build one slice per unique real date, newest first
+                    unique_real_dates = sorted(set(d for d in real_dates if d is not None), reverse=True)
+
+                    for real_date in unique_real_dates:
+                        mask = real_dates_series == real_date
+                        df_slice = df_raw[mask].reset_index(drop=True)
+                        if len(df_slice) > 0:
+                            label = real_date.strftime("%d-%b")
+                            date_slice_dfs.append((label, df_slice))
+
+                    # Summary display
+                    if date_slice_dfs:
+                        summary_parts = [f"**`{lbl}`** {len(df_s)} rows" for lbl, df_s in date_slice_dfs]
+                        st.info("📌 " + "  |  ".join(summary_parts))
+                        with st.expander("👁 Preview each date slice"):
+                            for lbl, df_s in date_slice_dfs:
+                                st.markdown(f"**{lbl}** — {len(df_s)} rows")
+                                st.dataframe(
+                                    df_s[[_time_col, _recon_col] + [c for c in df_s.columns if c not in [_time_col, _recon_col]]]
+                                    .head(5),
+                                    use_container_width=True
+                                )
+
+            elif use_split and (not _time_col or not _recon_col):
+                st.warning("⚠️ Could not find both 'Reconciliation Time' and 'Reconciliation Date' columns — cannot split.")
+
+            # If no split or split produced nothing, use the whole file as one slice
             if not date_slice_dfs:
-                _today_lbl = _base_recon_date.strftime("%d-%b") if _base_recon_date else "Today"
+                # Determine label from the date column
+                if _recon_col:
+                    try:
+                        _d_found = pd.to_datetime(df_raw[_recon_col], errors="coerce").dt.date.dropna().unique()
+                        if len(_d_found) == 1:
+                            _today_lbl = sorted(_d_found)[-1].strftime("%d-%b")
+                        elif len(_d_found) > 1:
+                            _today_lbl = f"{sorted(_d_found)[0].strftime('%d-%b')}–{sorted(_d_found)[-1].strftime('%d-%b')}"
+                        else:
+                            _today_lbl = "All"
+                    except Exception:
+                        _today_lbl = "All"
+                else:
+                    _today_lbl = "All"
                 date_slice_dfs = [(_today_lbl, df_raw.copy())]
-
-            df_today_raw = date_slice_dfs[0][1]   # newest = today for other reports
 
             st.markdown("---")
 
             with st.spinner("Processing Geidea reports..."):
-                # Process each slice
                 processed_slices = [(label, process_geidea_data(df_s))
                                     for label, df_s in date_slice_dfs]
-                df_processed = processed_slices[0][1]   # today = first (newest) slice
+                df_processed = processed_slices[0][1]
 
                 summary_buffer, summary_df, grand_total = create_geidea_summary_file(df_processed)
                 detailed_buffer, num_terminals          = create_geidea_detailed_file(df_processed)
                 detailed_tot_buffer, _                  = create_geidea_detailed_totals_only(processed_slices)
 
-                unique_dates     = df_processed["Reconciliation Date"].dropna().unique()
+                unique_dates       = df_processed["Reconciliation Date"].dropna().unique()
                 has_multiple_dates = len(unique_dates) > 1
                 if has_multiple_dates:
                     summary_date_buffer, _, num_dates = create_geidea_summary_by_date_file(df_processed)
@@ -1930,8 +1711,8 @@ if uploaded_file:
             )
 
             st.subheader("⬇️ Geidea: Download Reports")
-            n_reports = 5 if has_multiple_dates else 3
-            prev_note = f" *({len(date_slice_dfs)} date sheets)*" if use_split and valid and len(date_slice_dfs) > 1 else ""
+            n_reports  = 5 if has_multiple_dates else 3
+            prev_note  = f" *({len(date_slice_dfs)} date sheets)*" if use_split and valid and len(date_slice_dfs) > 1 else ""
             st.markdown(f"**{n_reports} Geidea reports generated:**")
             c1, c2 = st.columns(2)
             with c1:
@@ -2120,8 +1901,7 @@ if st.button("🚀 Fetch Zenput Submissions", type="primary", use_container_widt
                         data=z_buf_by_date,
                         file_name=f"{_fname_base}_ByDate.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
-                        key="z_dl_date"
+                        use_container_width=True, key="z_dl_date"
                     )
                 with dl_c2:
                     st.download_button(
@@ -2129,8 +1909,7 @@ if st.button("🚀 Fetch Zenput Submissions", type="primary", use_container_widt
                         data=z_buf_by_branch,
                         file_name=f"{_fname_base}_ByBranch.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
-                        key="z_dl_branch"
+                        use_container_width=True, key="z_dl_branch"
                     )
 
             if z_push:
@@ -2143,4 +1922,4 @@ if st.button("🚀 Fetch Zenput Submissions", type="primary", use_container_widt
                     st.error(msg)
 
 st.markdown("---")
-st.caption("Geidea & Foodics v5.8 | Branch-grouped simplified · Previous Day split · Zenput Financial")
+st.caption("Geidea & Foodics v5.9 | Date split uses Reconciliation Date + cutoff time · Zenput Financial")

@@ -1217,7 +1217,7 @@ ZENPUT_CHANNEL_SHORT = {
     "Ketta - كيتا":                                           "Ketta",
     "Mada - مدى":                                             "Mada",
     "Cash - كاش":                                             "Cash",
-    "Cash used without invoice - الكاش المستخدم من غير فاتورة": "Cash (No Invoice)",
+    "Cash used without invoice - الكاش المستخدم من غير فاتورة": "Cash With No Invoices",
     "Cash purchase invoice - فواتير الشراء النقدية":          "Cash Purchase Inv.",
 }
 
@@ -1395,11 +1395,10 @@ def _zenput_group_df(df):
 
     # Drop: all Invoices columns EXCEPT Cash and Cash Purchase Inv.
     # Drop: Notes and Total Invoices entirely
-    keep_invoice_cols = {"Cash - Invoices", "Cash Purchase Inv. - Invoices"}
+    # Drop ALL Invoices columns and Notes and Total Invoices
     drop_cols = [
         c for c in grouped.columns
-        if (c in ("Notes", "Total Invoices")) or
-           ("Invoices" in c and c not in keep_invoice_cols)
+        if (c in ("Notes", "Total Invoices")) or ("Invoices" in c)
     ]
     grouped = grouped.drop(columns=drop_cols, errors="ignore")
 

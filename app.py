@@ -744,6 +744,9 @@ ZENPUT_BRANCH_MAP={
     "2258220":"PSJED B36","2185452":"OBJED B22","2243963":"URRUH B34","2199835":"HAJED B26",
     "2210205":"MAJED B28","2250799":"IRRUH B35","2164027":"BDRUH B16","2155654":"AQRUH B13",
     "2197298":"TKRUH B18","2164028":"QRRUH B17","2257790":"SHMAK B37","2260889":"UHDMM B38","2263062":"HSRUH B39",
+"2169459":"Lubda Alaqeq Branch LB01","2222802":"Lubda Alkhaleej Branch LB02",
+"2232755":"Garatis As Suwaidi QB01","2235805":"Garatis Alnargis QB02",
+"2254072":"Garatiss QB03","2256386":"Garatiss QB04",
 }
 ZENPUT_CHANNELS=["Noon - نون","To you - تو يو","Barakah - بركه","Mr. Manddob - مستر مندوب","Ninja - نينجا","The chefz - ذا شيفز","Marsool - مرسول","Solo loyalty - سولو لوياليتي","Jahez - جاهز","Hungerstation - هنقرستيشن","Ketta - كيتا","Mada - مدى","Cash - كاش","Cash used without invoice - الكاش المستخدم من غير فاتورة","Cash purchase invoice - فواتير الشراء النقدية"]
 ZENPUT_CHANNEL_SHORT={"Noon - نون":"Noon","To you - تو يو":"To You","Barakah - بركه":"Barakah","Mr. Manddob - مستر مندوب":"Mr. Manddob","Ninja - نينجا":"Ninja","The chefz - ذا شيفز":"The Chefz","Marsool - مرسول":"Marsool","Solo loyalty - سولو لوياليتي":"Solo Loyalty","Jahez - جاهز":"Jahez","Hungerstation - هنقرستيشن":"Hungerstation","Ketta - كيتا":"Ketta","Mada - مدى":"Mada","Cash - كاش":"Cash","Cash used without invoice - الكاش المستخدم من غير فاتورة":"Cash With No Invoices","Cash purchase invoice - فواتير الشراء النقدية":"Cash Purchase Inv."}
